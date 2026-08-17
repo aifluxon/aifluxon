@@ -21,7 +21,7 @@ class ToolEffect(str, Enum):
 
 
 class AllowAllPolicy:
-    """Generic policy that allows every registered tool. This is not EasyPhy Default/Managed/Trusted."""
+    """Policy that allows every registered tool."""
 
     def evaluate(self, name: str, arguments: dict[str, Any], effect: str) -> dict[str, Any]:
         return {"decision": "allow"}

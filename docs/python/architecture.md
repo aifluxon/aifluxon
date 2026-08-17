@@ -1,55 +1,45 @@
 # Architecture
 
-Python is the second Host of the canonical AIFLUXON embedded backend. It is not EasyPhy Remote Control.
+AIFLUXON is an in-process backend. Python and Rust applications call the same facade.
 
 ```text
 Python
   → PyO3 (`bindings/python`)
   → aifluxon-api
   → aifluxon-runtime
-  → aifluxon-providers / Host-registered tools
+  → aifluxon-providers / host-registered tools
 ```
 
-EasyPhy uses the same facade:
-
-```text
-EasyPhy Host
-  → aifluxon-api
-  → same Runtime
-```
-
-## Dependency boundary
+## Binding boundary
 
 `bindings/python` may depend on:
 
-* `aifluxon-api`
-* PyO3 / tokio / serde_json
+- `aifluxon-api`
+- PyO3 / tokio / serde_json
 
 It must not depend on:
 
-* `aifluxon-core`
-* `aifluxon-runtime`
-* `aifluxon-providers`
-* EasyPhy / `src-tauri`
-* Tauri
+- `aifluxon-core`
+- `aifluxon-runtime`
+- `aifluxon-providers`
 
-If Python needs a capability the facade lacks, add a seam to `aifluxon-api`.
+If Python needs a capability the facade lacks, add it to `aifluxon-api` first.
 
-## Internal concepts (not Python public API)
+## Internal types (not Python constructors)
 
-These exist in Runtime and may appear in architecture discussions, but they are **Internal** and are not Python constructors:
+These exist in the runtime and may appear in architecture notes, but they are not part of the Python public API:
 
-* `ToolLedger`
-* `AgentCoordinator`
-* `RunTable`
-* `TerminalGuard`
-* `PendingOperationStore`
+- `ToolLedger`
+- `AgentCoordinator`
+- `RunTable`
+- `TerminalGuard`
+- `PendingOperationStore`
 
-## Invariants preserved across the Python host
+## Identities and invariants
 
-* `RunId` ≠ `SessionId` ≠ `ProviderSessionKey`
-* Continuation does not reset budget, session, or ledger
-* Exactly one terminal event
-* Event sequence is monotonic
-* Tool side effects are at-most-once
-* Cancellation is explicit
+- `RunId` ≠ `SessionId` ≠ `ProviderSessionKey`
+- Continuation does not reset budget, session, or the tool ledger
+- Exactly one terminal event per run
+- Event sequence is monotonic
+- Tool side effects run at most once per invocation id
+- Cancellation is explicit (`await run.cancel()`)

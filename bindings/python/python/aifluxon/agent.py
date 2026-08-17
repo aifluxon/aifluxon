@@ -26,7 +26,7 @@ class RunResult:
 
 
 class Agent:
-    """Python host for the canonical AIFLUXON runtime.
+    """In-process AIFLUXON agent.
 
     Construction does not start a run. The default store is in-memory and
     performs no filesystem writes.
@@ -120,7 +120,7 @@ class Session:
 
 
 class Run:
-    """One execution of the canonical runtime."""
+    """One agent run."""
 
     def __init__(self, agent: Agent, run_id: str, session_id: str | None) -> None:
         self._agent = agent

@@ -1,18 +1,18 @@
 # AIFLUXON Python SDK
 
-AIFLUXON Python is the second host of the canonical embedded agent backend. It is not a remote-control API and it does not copy host product semantics.
+Python bindings for the AIFLUXON in-process agent backend. The package talks to the same Rust facade as other embedders. It is not a remote-control API.
 
 ```text
 Python
   → PyO3
   → aifluxon-api
-  → canonical Runtime
-  → Provider / Tool
+  → runtime
+  → providers / tools
 ```
 
-## Maturity
+## Status
 
-The SDK is **experimental**. Public names are listed in `aifluxon.__all__`. Internal `_native` helpers are not a user API.
+The SDK is **experimental**. Public names are listed in `aifluxon.__all__`. Helpers under `_native` are not a supported API.
 
 ## Install
 
@@ -20,16 +20,16 @@ The SDK is **experimental**. Public names are listed in `aifluxon.__all__`. Inte
 pip install aifluxon
 ```
 
-| Platform             | Status                 |
-| -------------------- | ---------------------- |
-| Windows 10/11 x86_64 | Supported              |
-| Windows ARM64        | Not supported          |
-| Linux                | Not supported in 0.1.0 |
-| macOS                | Not supported in 0.1.0 |
+| Platform | Status |
+| -------- | ------ |
+| Windows 10/11 x86_64 | Supported |
+| Windows ARM64 | Not supported |
+| Linux | Not supported in 0.1.0 |
+| macOS | Not supported in 0.1.0 |
 
 Requires **CPython 3.11–3.14**. Wheels are ABI-specific (`cp3xx-win_amd64`), not a single abi3 wheel.
 
-## Minimal quick start
+## Quick start
 
 ```python
 import asyncio
@@ -43,18 +43,7 @@ async def main():
 asyncio.run(main())
 ```
 
-`ControlledProvider` is the offline/test provider. It does not use the network.
-
-## Develop from source
-
-```powershell
-cd bindings/python
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install maturin pytest pytest-asyncio
-maturin develop
-python -c "import aifluxon"
-```
+`ControlledProvider` is offline. It does not use the network.
 
 ## Documentation
 
@@ -63,14 +52,13 @@ python -c "import aifluxon"
 - [Providers](providers.md)
 - [Sessions](sessions.md)
 - [Events](events.md)
-- [Tools & Policy](tools-and-policy.md)
+- [Tools and policy](tools-and-policy.md)
 - [Errors](errors.md)
 - [Architecture](architecture.md)
-- [API development](api-development.md)
 
 ## Providers
 
-Public Python providers:
+Included:
 
 - OpenAI
 - DeepSeek API
@@ -78,21 +66,18 @@ Public Python providers:
 - Kimi
 - Gemini
 - Codex
-- Custom
-- ControlledProvider (offline)
+- Custom OpenAI-compatible endpoints
+- `ControlledProvider` (offline)
 
-ChatGPT Web and DeepSeek Web are host-private providers. They are **not** part of the public Python SDK. There is no `ChatGptWebProvider` / `DeepSeekWebProvider` constructor here.
+ChatGPT Web and DeepSeek Web are **not** part of this SDK. There is no `ChatGptWebProvider` or `DeepSeekWebProvider` constructor.
 
-## Not in this SDK
+## Out of scope
 
-- Host permission products (Default / Managed / Trusted)
-- Host file tools, MATLAB, bundled converters
-- Tauri windows, product history, OAuth UI
+The Python package does not include a desktop UI, host-specific tools, or product-specific permission profiles.
 
 ## Stability
 
 | Surface | Status |
-|---|---|
+| ------- | ------ |
 | `aifluxon.__all__` | Experimental public API |
 | `_native` | Internal |
-| Host product adapters | Out of scope |

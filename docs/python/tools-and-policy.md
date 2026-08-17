@@ -1,19 +1,18 @@
 # Tools and policy
 
-Python is a second Host. A Python callable never bypasses the canonical runtime.
+Python callables go through the same tool path as other embedders. They do not bypass validation, policy, operations, the tool ledger, budget, or cancellation.
 
 ```text
 Python callable
-  → PythonToolExecutor
-  → ToolDescriptor
-  → ToolRegistry
-  → Validation
-  → ToolPolicy
-  → Operation
-  → Executor
-  → ToolLedger
-  → Budget
-  → Cancellation
+  → descriptor
+  → registry
+  → validation
+  → policy
+  → operation
+  → executor
+  → ledger
+  → budget
+  → cancellation
 ```
 
 ## Define a tool
@@ -26,13 +25,13 @@ def lookup(query: str) -> str:
     return query
 ```
 
-* `name` defaults to the function name
-* `description` defaults to the docstring
-* `effect` is required for a meaningful policy; the default is `UNKNOWN` and is never guessed from the name
-* `parallel_safe` defaults to `False`
-* sync and async functions are both accepted
-* sync functions run on a worker thread so they do not block the Rust runtime
-* async functions are scheduled on the running asyncio loop via `run_coroutine_threadsafe`
+- `name` defaults to the function name
+- `description` defaults to the docstring
+- `effect` is required for a meaningful policy; the default is `UNKNOWN` and is never guessed from the name
+- `parallel_safe` defaults to `False`
+- sync and async functions are both accepted
+- sync functions run on a worker thread so they do not block the Rust runtime
+- async functions are scheduled on the running asyncio loop via `run_coroutine_threadsafe`
 
 ## Schema
 
@@ -44,12 +43,12 @@ JSON Schema is generated from type annotations. Supported: `str`, `int`, `float`
 
 ## Policy
 
-This is a **generic** Host policy, not EasyPhy Default / Managed / Trusted.
-
-* `AllowAllPolicy` — allow every registered tool
-* `RequireApprovalPolicy(mode="blocking_approval"|"deferred_commit", effects=None)`
+- `AllowAllPolicy` — allow every registered tool
+- `RequireApprovalPolicy(mode="blocking_approval"|"deferred_commit", effects=None)`
 
 Custom objects may implement `evaluate(name, arguments, effect) -> dict`.
+
+These are generic allow / approve policies. They are not a product permission profile.
 
 ## Approval and deferred commit
 
@@ -66,12 +65,12 @@ Deferred prepared effect:
 await run.commit_operation(event.operation_id)
 ```
 
-`Approve` on a deferred operation is rejected (`StateConflictError`). That keeps Prepared Effect → Operation → Commit instead of `approved: bool`.
+`Approve` on a deferred operation is rejected (`StateConflictError`). Use commit for the prepared-effect path instead of flattening the decision to a boolean.
 
-## ToolLedger
+## Tool ledger
 
 Identical `ToolInvocationId` values are executed at most once. Python tools cannot opt out.
 
 ## Exceptions
 
-Python tool exceptions become canonical tool failures. They must not panic Rust. Validation errors fail before the executor.
+Python tool exceptions become tool failures. They must not panic Rust. Validation errors fail before the executor.

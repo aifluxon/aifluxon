@@ -5,7 +5,7 @@ edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/aifluxon/aifluxon"
 publish = false
-description = "Python bindings for the AIFLUXON embedded agent backend"
+description = "Python bindings for the AIFLUXON in-process agent backend"
 
 [lib]
 name = "_native"

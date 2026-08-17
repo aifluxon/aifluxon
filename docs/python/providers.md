@@ -1,8 +1,8 @@
 # Providers
 
-Public Python construction is limited to OpenAI-compatible families plus the offline `ControlledProvider`.
+Public Python construction covers OpenAI-compatible families plus the offline `ControlledProvider`.
 
-ChatGPT Web and DeepSeek Web are **EasyPhy-private providers; not part of the public Python SDK.**
+ChatGPT Web and DeepSeek Web are **not** part of this SDK.
 
 Credentials are passed in memory as `api_key`. They are never written to session JSON.
 
@@ -13,10 +13,9 @@ from aifluxon import OpenAI
 provider = OpenAI(model="gpt-4.1", api_key="...", base_url=None, api_mode=None)
 ```
 
-* Default base URL: `https://api.openai.com/v1`
-* Chat Completions by default; Responses is selected by model family inside the provider
-* Reasoning effort and prompt cache are provider-owned
-* Limitation: requires a live key for real calls; tests use `ControlledProvider`
+- Default base URL: `https://api.openai.com/v1`
+- Chat Completions by default; Responses is selected by model family inside the provider
+- Reasoning effort and prompt cache are provider-owned
 
 ## DeepSeek
 
@@ -34,7 +33,7 @@ from aifluxon import Qwen
 Qwen(model="qwen-plus", api_key="...")
 ```
 
-Default base URL: `https://dashscope.aliyuncs.com/compatible-mode/v1`. Summary-only turns request generic continuation (`SummaryOnly`); Runtime does not branch on the name Qwen.
+Default base URL: `https://dashscope.aliyuncs.com/compatible-mode/v1`. Summary-only turns request generic continuation (`SummaryOnly`).
 
 ## Kimi
 
@@ -61,7 +60,7 @@ from aifluxon import Codex
 Codex(model="gpt-5.2-codex", api_key="...")
 ```
 
-Default API mode: `responses`. Non-terminal `end_turn` is interpreted by the Codex provider as `Continue(ProviderRequested)`. Codex OAuth remains EasyPhy-owned.
+Default API mode: `responses`. Non-terminal `end_turn` is interpreted as `Continue(ProviderRequested)`. This constructor takes an API key; browser OAuth login is not included.
 
 ## Custom
 

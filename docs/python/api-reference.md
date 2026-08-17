@@ -45,7 +45,7 @@ class Agent:
     ) -> None: ...
 ```
 
-Creates a Python host around one canonical `Aifluxon` backend. The default `store` is `InMemorySessionStore` (no disk writes). `max_model_rounds` is a hard Run budget and is not overridden by provider continuation hints.
+Creates an agent around one AIFLUXON backend. The default `store` is `InMemorySessionStore` (no disk writes). `max_model_rounds` is a hard run budget and is not overridden by provider continuation hints.
 
 ### Properties
 
@@ -56,7 +56,7 @@ Creates a Python host around one canonical `Aifluxon` backend. The default `stor
 
 #### `await Agent.start(prompt: str, *, session_id: str | None = None) -> Run`
 
-Starts one run. If `session_id` is set, canonical messages and provider state for that session are restored first.
+Starts one run. If `session_id` is set, stored messages and provider state for that session are restored first.
 
 #### `await Agent.run(prompt: str, *, session_id: str | None = None) -> RunResult`
 
@@ -112,9 +112,9 @@ class Run:
 
 * `events()` is a bounded async iterator over Runtime events. Sequence is monotonic. Terminal events occur once.
 * Dropping the iterator does **not** cancel the run.
-* `result()` waits for the canonical terminal. It does not sum token deltas.
+* `result()` waits for the run to finish. It does not sum token deltas.
 * `resolve_operation` is for blocking approval. `commit_operation` is for deferred prepared-effect commit.
-* `cancel()` is the only canonical cancel.
+* `cancel()` is the supported way to cancel a run.
 
 ### Raises
 
@@ -219,7 +219,7 @@ Unsupported annotations raise `TypeError`. Effect is never inferred from the fun
 
 ## `AllowAllPolicy`
 
-Allows every registered tool. This is **not** EasyPhy Default/Managed/Trusted.
+Allows every registered tool.
 
 ## `RequireApprovalPolicy`
 

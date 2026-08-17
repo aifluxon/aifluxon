@@ -1,13 +1,15 @@
 # AIFLUXON
 
-AIFLUXON is an **experimental, embedded, headless Agent backend**. Hosts embed it in-process. It is not a remote-control API and it does not own product UI.
+Experimental in-process agent backend. Applications embed AIFLUXON in their own process. It is not a remote control service and it does not ship a product UI.
 
 ```text
-Host (Rust or Python)
+Your application (Rust or Python)
   → aifluxon-api
-  → aifluxon-runtime
-  → aifluxon-providers / Host-registered tools
+  → runtime
+  → providers and tools
 ```
+
+The SDK is experimental. Public Python names are listed in `aifluxon.__all__`.
 
 ## Install (Python)
 
@@ -15,33 +17,28 @@ Host (Rust or Python)
 pip install aifluxon
 ```
 
-This is the production install path once `aifluxon` 0.1.0 is on PyPI. It requires **Windows 10/11 x86_64** and a matching **CPython** wheel. No Rust toolchain is required to install the published wheel.
+| Requirement | Support in 0.1.0 |
+| ----------- | ---------------- |
+| Windows 10 / 11, x86_64 | Supported |
+| Windows ARM64 | Not supported |
+| Linux | Not supported |
+| macOS | Not supported |
+| CPython 3.11, 3.12, 3.13, 3.14 | Supported (`win_amd64` wheels) |
+| CPython 3.10, PyPy, other ABIs | Not supported |
 
-| Platform             | Status                 |
-| -------------------- | ---------------------- |
-| Windows 10/11 x86_64 | Supported              |
-| Windows ARM64        | Not supported          |
-| Linux                | Not supported in 0.1.0 |
-| macOS                | Not supported in 0.1.0 |
+Published wheels do not require a Rust toolchain. Each Python minor version uses its own wheel; this is not an abi3 package.
 
-| Python | Status |
-| ------ | ------ |
-| CPython 3.11, 3.12, 3.13, 3.14 | Supported via version-specific `win_amd64` wheels |
-| CPython 3.10 | Not supported |
-| PyPy / other ABIs | Not supported |
+License: [Apache License 2.0](LICENSE).
 
-The SDK is **experimental**. Public names live in `aifluxon.__all__`.
+## Features
 
-## What it provides
+- Embedded agent runtime with a stable Rust facade (`aifluxon-api`)
+- Python package `aifluxon` over the same facade
+- Providers: OpenAI, DeepSeek, Qwen, Kimi, Gemini, Codex, and custom OpenAI-compatible endpoints
+- Tools, a generic approval policy, operations, budgets, and cancellation
+- Persistent sessions and an ordered event stream
 
-- **Rust-first** crates: `aifluxon-core`, `aifluxon-runtime`, `aifluxon-providers`, `aifluxon-api`
-- **Python SDK** (`aifluxon`) as a second Host over the same facade
-- **Provider registry** for OpenAI, DeepSeek, Qwen, Kimi, Gemini, Codex, and Custom OpenAI-compatible endpoints
-- **Tool runtime** with descriptors, generic `ToolPolicy`, operations, ledger, budget, and cancellation
-- **Sessions** distinct from runs (`SessionId` ≠ `RunId` ≠ `ProviderSessionKey`)
-- **Events** as a monotonic stream with a single terminal
-
-ChatGPT Web and DeepSeek Web are **not** part of the public Python SDK.
+ChatGPT Web and DeepSeek Web are not part of the public Python SDK.
 
 ## Python quickstart
 
@@ -58,7 +55,7 @@ asyncio.run(main())
 
 `ControlledProvider` is offline. It does not use the network or API keys.
 
-## Rust quickstart
+## Rust
 
 ```rust
 use std::sync::Arc;
@@ -93,22 +90,25 @@ assert_eq!(run.result().await?.text, "hello");
 # }
 ```
 
-The Rust crates are embedded by path/git revision. They are not published to crates.io in 0.1.0.
+The Rust crates are consumed as a Git dependency. They are not published to crates.io in 0.1.0.
+
+```toml
+aifluxon-api = { git = "https://github.com/aifluxon/aifluxon", rev = "<commit>" }
+```
 
 ## Documentation
 
 - [Python SDK](docs/python/README.md)
 - [Python API reference](docs/python/api-reference.md)
-- [Architecture (Python host)](docs/python/architecture.md)
-- [Provider extension](docs/python/providers.md)
-- [Tool extension](docs/python/tools-and-policy.md)
-- [Runtime architecture](docs/architecture/aifluxon-boundary.md)
+- [Architecture](docs/architecture.md)
+- [Providers](docs/python/providers.md)
+- [Tools and policy](docs/python/tools-and-policy.md)
 
-Runnable examples: [`bindings/python/examples`](bindings/python/examples).
+Examples: [`bindings/python/examples`](bindings/python/examples).
 
-## Development
+## Build from source
 
-Root `Cargo.lock` is tracked so Python release wheels rebuild against the same Rust dependency graph.
+Root `Cargo.lock` is tracked so release wheels rebuild against the same Rust dependency graph.
 
 ```powershell
 cargo test --workspace
@@ -119,6 +119,8 @@ python -m pip install maturin pytest pytest-asyncio
 maturin develop
 pytest
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

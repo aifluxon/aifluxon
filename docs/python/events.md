@@ -20,7 +20,7 @@ The native forwarder applies backpressure on the bounded channel. A slow iterato
 
 ## Consumer drop
 
-Closing or dropping `run.events()` does **not** cancel the run. `await run.result()` still completes. Canonical cancel is `await run.cancel()`.
+Closing or dropping `run.events()` does **not** cancel the run. `await run.result()` still completes. Cancel with `await run.cancel()`.
 
 ## Public event types
 

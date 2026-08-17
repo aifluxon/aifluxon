@@ -1,6 +1,6 @@
 # Quick Start
 
-This page only documents APIs that exist today.
+This page documents APIs that exist in 0.1.0.
 
 ## Install
 
@@ -8,7 +8,7 @@ This page only documents APIs that exist today.
 pip install aifluxon
 ```
 
-Requires Windows 10/11 x86_64 and CPython 3.11–3.14. See [README](README.md) for a development (`maturin develop`) build.
+Requires Windows 10/11 x86_64 and CPython 3.11–3.14. See [README](README.md) to build from source with `maturin develop`.
 
 ## 1. Import and run a prompt
 
@@ -26,7 +26,7 @@ async def main():
 asyncio.run(main())
 ```
 
-`result()` comes from the canonical Runtime terminal. It does not sum token events on the Python side.
+`result()` waits for the run to finish. It does not reconstruct the answer by summing token events in Python.
 
 ## 2. Persistent session
 
@@ -68,7 +68,7 @@ def double(value: float) -> float:
     return value * 2
 ```
 
-Python callables still go through ToolRegistry, validation, ToolPolicy, operations, ToolLedger, budget, and cancellation.
+Decorated callables still go through registry, validation, policy, operations, the tool ledger, budget, and cancellation.
 
 ## 5. Handle approval
 
