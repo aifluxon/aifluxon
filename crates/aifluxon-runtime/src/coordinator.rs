@@ -140,13 +140,7 @@ impl AgentCoordinator {
                 })?;
                 let invocation_id = call.id.hyphenated();
                 let result = self.execute_once_recorded(&invocation_id, || execute(call));
-                request.messages.push(Message {
-                    role: MessageRole::Tool,
-                    content: vec![ContentPart::Text(result.to_string())],
-                    tool_calls: Vec::new(),
-                    tool_call_id: Some(call.id),
-                    provider_state: None,
-                });
+                request.messages.push(tool_message(call, result));
             }
         }
     }
@@ -445,7 +439,12 @@ fn tool_message(call: &ToolCall, result: Value) -> Message {
         content: vec![ContentPart::Text(result.to_string())],
         tool_calls: Vec::new(),
         tool_call_id: Some(call.id),
-        provider_state: None,
+        provider_state: call
+            .provider_call_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(|id| serde_json::json!({ "call_id": id })),
     }
 }
 
@@ -499,6 +498,7 @@ mod tests {
                     id: ToolInvocationId::from_stable_key("call-1"),
                     name: "read_file".to_string(),
                     arguments: serde_json::json!({}),
+                    provider_call_id: Some("call-1".to_string()),
                 }],
                 usage: None,
                 terminal: aifluxon_core::ProviderTerminal::ToolCalls,

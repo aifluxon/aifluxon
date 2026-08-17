@@ -174,6 +174,7 @@ fn tool_turn(name: &str, id: &str) -> ModelTurn {
             id: ToolInvocationId::from_stable_key(id),
             name: name.to_string(),
             arguments: json!({}),
+            provider_call_id: Some(id.to_string()),
         }],
         usage: None,
         terminal: ProviderTerminal::ToolCalls,

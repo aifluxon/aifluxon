@@ -1,8 +1,9 @@
-use super::chat_completions::{finished_tool_calls, message_to_wire, usage_value};
+use super::chat_completions::{finished_tool_calls, usage_value};
 use super::tools::descriptor_to_openai_tool;
 use crate::common::{reconcile_terminal_text, TextDeltaReconciler, ToolCallAssembler};
 use aifluxon_core::{
-    Message, ModelEventSink, ModelTurn, ModelTurnRequest, ProviderError, ProviderTerminal,
+    ContentPart, Message, MessageRole, ModelEventSink, ModelTurn, ModelTurnRequest, ProviderError,
+    ProviderTerminal, ToolInvocationId,
 };
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -10,15 +11,18 @@ use std::hash::{Hash, Hasher};
 
 pub fn build_responses_body(request: &ModelTurnRequest) -> Value {
     let mut input = Vec::new();
+    let mut instructions = Vec::new();
+    let mut collecting_leading_instructions = true;
+    let mut call_ids = HashMap::new();
     for message in &request.messages {
-        if let Some(items) = replay_items_from_message(message) {
-            input.extend(items);
+        if collecting_leading_instructions && message.role == MessageRole::System {
+            if let Some(text) = single_text_content(message) {
+                instructions.push(text);
+                continue;
+            }
         }
-        let has_content = !message.content.is_empty();
-        let has_tools = !message.tool_calls.is_empty();
-        if has_content || has_tools || message.tool_call_id.is_some() {
-            input.push(message_to_wire(message));
-        }
+        collecting_leading_instructions = false;
+        input.extend(message_to_responses_items(message, &mut call_ids));
     }
     let mut body = json!({
         "model": request.model,
@@ -26,6 +30,9 @@ pub fn build_responses_body(request: &ModelTurnRequest) -> Value {
         "stream": true,
         "store": false,
     });
+    if !instructions.is_empty() {
+        body["instructions"] = json!(instructions.join("\n\n"));
+    }
     if !request.tools.is_empty() {
         body["tools"] = Value::Array(
             request
@@ -47,14 +54,286 @@ pub fn build_responses_body(request: &ModelTurnRequest) -> Value {
     body
 }
 
-fn replay_items_from_message(message: &Message) -> Option<Vec<Value>> {
+fn message_to_responses_items(
+    message: &Message,
+    call_ids: &mut HashMap<ToolInvocationId, String>,
+) -> Vec<Value> {
+    if message.role == MessageRole::Tool {
+        return vec![function_call_output_item(message, call_ids)];
+    }
+
+    let (replay_items, covers_full_turn) = replay_items_from_message(message);
+    record_function_call_ids(&replay_items, call_ids);
+    if covers_full_turn {
+        return replay_items;
+    }
+
+    let mut items = replay_items;
+    // Codex encrypted reasoning already lives in replay items. Only synthesize
+    // plaintext reasoning_text when nothing was preserved, matching EasyPhy.
+    if items.is_empty() {
+        if let Some(reasoning) = reasoning_content_from_message(message) {
+            items.push(json!({
+                "type": "reasoning",
+                "content": [{
+                    "type": "reasoning_text",
+                    "text": reasoning,
+                }],
+            }));
+        }
+    }
+
+    let content = responses_content(message);
+    if responses_content_is_present(&content) {
+        items.push(json!({
+            "role": responses_role(message.role),
+            "content": content,
+        }));
+    }
+
+    for call in &message.tool_calls {
+        let call_id = call.wire_call_id();
+        call_ids.insert(call.id, call_id.clone());
+        items.push(json!({
+            "type": "function_call",
+            "call_id": call_id,
+            "name": call.name,
+            "arguments": arguments_to_responses_wire(&call.arguments),
+        }));
+    }
+    items
+}
+
+fn function_call_output_item(
+    message: &Message,
+    call_ids: &HashMap<ToolInvocationId, String>,
+) -> Value {
+    json!({
+        "type": "function_call_output",
+        "call_id": resolve_function_call_id(message, call_ids),
+        "output": tool_output_text(message),
+    })
+}
+
+fn resolve_function_call_id(
+    message: &Message,
+    call_ids: &HashMap<ToolInvocationId, String>,
+) -> String {
+    if let Some(call_id) = message
+        .provider_state
+        .as_ref()
+        .and_then(|state| state.get("call_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        return call_id.to_string();
+    }
+    message
+        .tool_call_id
+        .and_then(|id| call_ids.get(&id).cloned())
+        .or_else(|| message.tool_call_id.map(|id| id.hyphenated()))
+        .unwrap_or_default()
+}
+
+fn replay_items_from_message(message: &Message) -> (Vec<Value>, bool) {
+    let Some(state) = message.provider_state.as_ref() else {
+        return (Vec::new(), false);
+    };
+    if let Some(items) = state.as_array().filter(|items| !items.is_empty()) {
+        return (filter_persisted_turn_items(items), true);
+    }
+    if let Some(items) = state
+        .get("responses_turn_items")
+        .and_then(Value::as_array)
+        .filter(|items| !items.is_empty())
+    {
+        return (filter_persisted_turn_items(items), true);
+    }
+    for key in [
+        "response_items",
+        "responses_replay_items",
+        "responses_reasoning_items",
+    ] {
+        if let Some(items) = state
+            .get(key)
+            .and_then(Value::as_array)
+            .filter(|items| !items.is_empty())
+        {
+            // Codex/OpenAI: pass encrypted reasoning and hosted search items through
+            // unchanged, then reconstruct function_call from canonical tool_calls.
+            return (items.to_vec(), false);
+        }
+    }
+    if let Some(items) = state
+        .get("terminal_output")
+        .and_then(Value::as_array)
+        .filter(|items| !items.is_empty())
+    {
+        return (codex_style_partial_replay_items(items), false);
+    }
+    (Vec::new(), false)
+}
+
+fn filter_persisted_turn_items(items: &[Value]) -> Vec<Value> {
+    items
+        .iter()
+        .filter_map(|item| match item.get("role").and_then(Value::as_str) {
+            Some("tool") => Some(function_call_output_from_chat_item(item)),
+            _ => match item.get("type").and_then(Value::as_str) {
+                Some("message")
+                    if item.get("role").and_then(Value::as_str) == Some("assistant") =>
+                {
+                    Some(item.clone())
+                }
+                Some(
+                    "reasoning" | "function_call" | "function_call_output" | "web_search_call"
+                    | "custom_tool_call" | "custom_tool_call_output",
+                ) => Some(item.clone()),
+                _ => None,
+            },
+        })
+        .collect()
+}
+
+fn codex_style_partial_replay_items(items: &[Value]) -> Vec<Value> {
+    items
+        .iter()
+        .filter(|item| {
+            matches!(
+                item.get("type").and_then(Value::as_str),
+                Some("reasoning" | "web_search_call")
+            )
+        })
+        .cloned()
+        .collect()
+}
+
+fn function_call_output_from_chat_item(item: &Value) -> Value {
+    json!({
+        "type": "function_call_output",
+        "call_id": item
+            .get("tool_call_id")
+            .or_else(|| item.get("call_id"))
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        "output": item
+            .get("output")
+            .or_else(|| item.get("content"))
+            .map(value_to_tool_output)
+            .unwrap_or_default(),
+    })
+}
+
+fn single_text_content(message: &Message) -> Option<String> {
+    match message.content.as_slice() {
+        [ContentPart::Text(text)] => Some(text.clone()),
+        _ => None,
+    }
+}
+
+fn record_function_call_ids(items: &[Value], call_ids: &mut HashMap<ToolInvocationId, String>) {
+    for item in items {
+        if item.get("type").and_then(Value::as_str) != Some("function_call") {
+            continue;
+        }
+        let Some(call_id) = item
+            .get("call_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        else {
+            continue;
+        };
+        call_ids.insert(
+            ToolInvocationId::from_stable_key(call_id),
+            call_id.to_string(),
+        );
+    }
+}
+
+fn reasoning_content_from_message(message: &Message) -> Option<String> {
     message.provider_state.as_ref().and_then(|state| {
         state
-            .get("response_items")
-            .or_else(|| state.get("responses_replay_items"))
-            .and_then(Value::as_array)
-            .cloned()
+            .get("reasoning_content")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|content| !content.is_empty())
+            .map(str::to_string)
     })
+}
+
+fn responses_role(role: MessageRole) -> &'static str {
+    match role {
+        MessageRole::System => "system",
+        MessageRole::User => "user",
+        MessageRole::Assistant => "assistant",
+        MessageRole::Tool => "user",
+    }
+}
+
+fn responses_content(message: &Message) -> Value {
+    if message.content.len() == 1 {
+        if let ContentPart::Text(text) = &message.content[0] {
+            return json!(text);
+        }
+    }
+    let text_type = if message.role == MessageRole::Assistant {
+        "output_text"
+    } else {
+        "input_text"
+    };
+    Value::Array(
+        message
+            .content
+            .iter()
+            .map(|part| match part {
+                ContentPart::Text(text) => json!({ "type": text_type, "text": text }),
+                ContentPart::Image(image) => json!({
+                    "type": "input_image",
+                    "image_url": image.artifact.as_str(),
+                }),
+            })
+            .collect(),
+    )
+}
+
+fn responses_content_is_present(content: &Value) -> bool {
+    match content {
+        Value::String(text) => !text.trim().is_empty(),
+        Value::Array(parts) => !parts.is_empty(),
+        _ => false,
+    }
+}
+
+fn tool_output_text(message: &Message) -> String {
+    let texts = message
+        .content
+        .iter()
+        .filter_map(|part| match part {
+            ContentPart::Text(text) => Some(text.as_str()),
+            ContentPart::Image(_) => None,
+        })
+        .collect::<Vec<_>>();
+    if texts.len() == 1 {
+        texts[0].to_string()
+    } else {
+        texts.join("")
+    }
+}
+
+fn value_to_tool_output(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    }
+}
+
+fn arguments_to_responses_wire(arguments: &Value) -> String {
+    match arguments {
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    }
 }
 
 #[derive(Default)]

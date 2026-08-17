@@ -25,6 +25,21 @@ pub struct ToolCall {
     pub id: ToolInvocationId,
     pub name: String,
     pub arguments: Value,
+    /// Provider-native call id from Chat Completions `tool_calls[].id` or
+    /// Responses `function_call.call_id`. Used on the wire; `id` stays canonical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_call_id: Option<String>,
+}
+
+impl ToolCall {
+    pub fn wire_call_id(&self) -> String {
+        self.provider_call_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| self.id.hyphenated())
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -113,6 +128,7 @@ mod tests {
                 id: tool_call_id,
                 name: "inspect".to_string(),
                 arguments: json!({ "artifact": "artifact://run/output-1" }),
+                provider_call_id: Some("call_inspect".to_string()),
             }],
             tool_call_id: Some(tool_call_id),
             provider_state: Some(json!({

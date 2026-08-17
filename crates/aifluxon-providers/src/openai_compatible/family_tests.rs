@@ -193,6 +193,7 @@ fn deepseek_replays_reasoning_content_on_assistant_history() {
                 id: call_id,
                 name: "read_file".to_string(),
                 arguments: json!({ "path": "src/lib.rs" }),
+                provider_call_id: Some("call-1".to_string()),
             }],
             tool_call_id: None,
             provider_state: Some(json!({
@@ -496,4 +497,186 @@ fn responses_input_replays_provider_state_items() {
     let body = build_responses_body(&request);
     assert_eq!(body["input"][1]["type"], "reasoning");
     assert_eq!(body["input"][1]["id"], "rs-1");
+}
+
+#[test]
+fn responses_input_maps_tool_messages_to_function_call_items() {
+    let call_id = aifluxon_core::ToolInvocationId::from_stable_key("call_shell");
+    let mut request = request_with("deepseek-v4-pro", Default::default());
+    request.messages.push(Message {
+        role: MessageRole::Assistant,
+        content: Vec::new(),
+        tool_calls: vec![aifluxon_core::ToolCall {
+            id: call_id,
+            name: "shell".to_string(),
+            arguments: json!({ "command": "rg --files" }),
+            provider_call_id: Some("call_shell".to_string()),
+        }],
+        tool_call_id: None,
+        provider_state: Some(json!({
+            "protocol": "responses",
+            "response_items": [{
+                "type": "reasoning",
+                "id": "rs_1",
+                "content": [{ "type": "reasoning_text", "text": "inspect first" }]
+            }],
+            "terminal_output": [
+                {
+                    "type": "reasoning",
+                    "id": "rs_1",
+                    "content": [{ "type": "reasoning_text", "text": "inspect first" }]
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call_shell",
+                    "name": "shell",
+                    "arguments": "{\"command\":\"rg --files\"}"
+                }
+            ]
+        })),
+    });
+    request.messages.push(Message {
+        role: MessageRole::Tool,
+        content: vec![ContentPart::Text("src/main.ts".to_string())],
+        tool_calls: Vec::new(),
+        tool_call_id: Some(call_id),
+        provider_state: Some(json!({ "call_id": "call_shell" })),
+    });
+
+    let body = build_responses_body(&request);
+    let input = body["input"].as_array().expect("responses input");
+    assert!(input.iter().all(|item| {
+        item.get("role").and_then(Value::as_str) != Some("tool") && item.get("tool_calls").is_none()
+    }));
+    assert_eq!(input[1]["type"], "reasoning");
+    assert_eq!(input[2]["type"], "function_call");
+    assert_eq!(input[2]["call_id"], "call_shell");
+    assert_eq!(input[2]["name"], "shell");
+    assert_eq!(input[3]["type"], "function_call_output");
+    assert_eq!(input[3]["call_id"], "call_shell");
+    assert_eq!(input[3]["output"], "src/main.ts");
+}
+
+#[test]
+fn responses_input_reconstructs_function_call_items_without_terminal_output() {
+    let call_id = aifluxon_core::ToolInvocationId::from_stable_key("call_read");
+    let mut request = request_with("deepseek-v4-flash", Default::default());
+    request.messages.push(Message {
+        role: MessageRole::Assistant,
+        content: vec![ContentPart::Text("checking".to_string())],
+        tool_calls: vec![aifluxon_core::ToolCall {
+            id: call_id,
+            name: "read_file".to_string(),
+            arguments: json!({ "path": "src/lib.rs" }),
+            provider_call_id: Some("call_read".to_string()),
+        }],
+        tool_call_id: None,
+        provider_state: None,
+    });
+    request.messages.push(Message {
+        role: MessageRole::Tool,
+        content: vec![ContentPart::Text("ok".to_string())],
+        tool_calls: Vec::new(),
+        tool_call_id: Some(call_id),
+        provider_state: None,
+    });
+
+    let body = build_responses_body(&request);
+    let input = body["input"].as_array().expect("responses input");
+    assert_eq!(input[1]["role"], "assistant");
+    assert_eq!(input[1]["content"], "checking");
+    assert_eq!(input[2]["type"], "function_call");
+    assert_eq!(input[2]["call_id"], "call_read");
+    assert_eq!(input[3]["type"], "function_call_output");
+    assert_eq!(input[3]["call_id"], "call_read");
+    assert_eq!(input[3]["output"], "ok");
+}
+
+#[test]
+fn codex_responses_input_preserves_encrypted_reasoning_and_rebuilds_tools() {
+    let call_id = aifluxon_core::ToolInvocationId::from_stable_key("call_1");
+    let mut request = request_with("codex-mini-latest", Default::default());
+    request.messages.insert(
+        0,
+        Message {
+            role: MessageRole::System,
+            content: vec![ContentPart::Text("Stable Codex instructions".to_string())],
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            provider_state: None,
+        },
+    );
+    request.messages.push(Message {
+        role: MessageRole::Assistant,
+        content: Vec::new(),
+        tool_calls: vec![aifluxon_core::ToolCall {
+            id: call_id,
+            name: "shell".to_string(),
+            arguments: json!({ "command": "rg --files" }),
+            provider_call_id: Some("call_1".to_string()),
+        }],
+        tool_call_id: None,
+        provider_state: Some(json!({
+            "protocol": "responses",
+            "response_items": [{
+                "type": "reasoning",
+                "id": "rs_codex",
+                "encrypted_content": "encrypted-blob",
+                "summary": []
+            }],
+            "terminal_output": [
+                {
+                    "type": "reasoning",
+                    "id": "rs_codex",
+                    "encrypted_content": "encrypted-blob",
+                    "summary": []
+                },
+                {
+                    "type": "message",
+                    "id": "msg_should_not_replace_replay",
+                    "role": "assistant",
+                    "content": [{ "type": "output_text", "text": "commentary" }]
+                },
+                {
+                    "type": "function_call",
+                    "id": "fc_1",
+                    "call_id": "call_1",
+                    "name": "shell",
+                    "arguments": "{\"command\":\"rg --files\"}"
+                }
+            ]
+        })),
+    });
+    request.messages.push(Message {
+        role: MessageRole::Tool,
+        content: vec![ContentPart::Text("src/main.ts".to_string())],
+        tool_calls: Vec::new(),
+        tool_call_id: Some(call_id),
+        provider_state: Some(json!({ "call_id": "call_1" })),
+    });
+
+    let body = decorated_responses(ApiFamily::Codex, &request);
+    let input = body["input"].as_array().expect("responses input");
+    assert_eq!(body["instructions"], "Stable Codex instructions");
+    assert_eq!(body["include"][0], "reasoning.encrypted_content");
+    assert_eq!(body["text"]["verbosity"], "medium");
+    assert!(input.iter().all(|item| {
+        item.get("role").and_then(Value::as_str) != Some("tool") && item.get("tool_calls").is_none()
+    }));
+    assert_eq!(input[0]["role"], "user");
+    assert_eq!(input[1]["type"], "reasoning");
+    assert_eq!(input[1]["encrypted_content"], "encrypted-blob");
+    assert!(input.iter().all(|item| {
+        item.get("id").and_then(Value::as_str) != Some("msg_should_not_replace_replay")
+    }));
+    assert!(!input.iter().any(|item| {
+        item.get("type").and_then(Value::as_str) == Some("reasoning")
+            && item.pointer("/content/0/type") == Some(&json!("reasoning_text"))
+    }));
+    assert_eq!(input[2]["type"], "function_call");
+    assert_eq!(input[2]["call_id"], "call_1");
+    assert!(input[2].get("id").is_none());
+    assert_eq!(input[3]["type"], "function_call_output");
+    assert_eq!(input[3]["call_id"], "call_1");
+    assert_eq!(input[3]["output"], "src/main.ts");
 }

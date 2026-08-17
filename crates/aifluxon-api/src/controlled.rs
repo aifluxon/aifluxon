@@ -92,6 +92,7 @@ pub fn tool_turn(name: &str, id: &str, arguments: serde_json::Value) -> ModelTur
             id: ToolInvocationId::from_stable_key(id),
             name: name.to_string(),
             arguments,
+            provider_call_id: Some(id.to_string()),
         }],
         usage: None,
         terminal: ProviderTerminal::ToolCalls,

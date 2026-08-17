@@ -79,17 +79,21 @@ impl ToolCallAssembler {
         self.calls
             .into_iter()
             .map(|call| {
-                let stable_key = if call.id.trim().is_empty() {
-                    format!("{}:{}", call.name, call.arguments)
+                let provider_call_id = if call.id.trim().is_empty() {
+                    None
                 } else {
-                    call.id
+                    Some(call.id.clone())
                 };
+                let stable_key = provider_call_id
+                    .clone()
+                    .unwrap_or_else(|| format!("{}:{}", call.name, call.arguments));
                 let arguments = serde_json::from_str(&call.arguments)
                     .unwrap_or_else(|_| Value::String(call.arguments));
                 ToolCall {
                     id: ToolInvocationId::from_stable_key(&stable_key),
                     name: call.name,
                     arguments,
+                    provider_call_id,
                 }
             })
             .collect()
@@ -189,6 +193,8 @@ mod tests {
         assert_eq!(calls[1].name, "read_file");
         assert_eq!(calls[1].arguments, json!({ "path": "src/lib.rs" }));
         assert_ne!(calls[0].id, calls[1].id);
+        assert_eq!(calls[0].provider_call_id.as_deref(), Some("call_a"));
+        assert_eq!(calls[1].provider_call_id.as_deref(), Some("call_b"));
     }
 
     #[test]
