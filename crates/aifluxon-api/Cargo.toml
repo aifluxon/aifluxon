@@ -1,0 +1,17 @@
+[package]
+name = "aifluxon-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Stable application facade for embedding the AIFLUXON agent backend"
+
+[dependencies]
+async-trait.workspace = true
+aifluxon-core = { path = "../aifluxon-core" }
+aifluxon-runtime = { path = "../aifluxon-runtime" }
+aifluxon-providers = { path = "../aifluxon-providers" }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true

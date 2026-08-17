@@ -1,0 +1,19 @@
+[package]
+name = "aifluxon-python"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/aifluxon/aifluxon"
+publish = false
+description = "Python bindings for the AIFLUXON embedded agent backend"
+
+[lib]
+name = "_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+aifluxon-api = { path = "../../crates/aifluxon-api" }
+async-trait = "0.1"
+pyo3 = { version = "0.26", features = ["extension-module"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }

@@ -1,0 +1,21 @@
+[package]
+name = "aifluxon-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Agent run orchestration, budgets, tools, and pending operations"
+
+[dependencies]
+async-trait.workspace = true
+aifluxon-core = { path = "../aifluxon-core" }
+atomicwrites = "0.4"
+jsonschema.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+futures-util = "0.3"
+fs2 = "0.4"
+thiserror.workspace = true
+uuid.workspace = true
