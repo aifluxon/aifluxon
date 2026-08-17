@@ -40,6 +40,10 @@ module-name = "aifluxon._native"
 python-source = "python"
 features = ["pyo3/extension-module"]
 
+[tool.maturin.sbom]
+rust = false
+auditwheel = false
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
