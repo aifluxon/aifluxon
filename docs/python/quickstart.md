@@ -140,4 +140,18 @@ await agent.run("Now translate.", system_prompt="You are a translator.")
 
 On a session, a new `system_prompt` replaces the leading system message instead of stacking another copy. See `bindings/python/examples/system_prompt.py`.
 
+## 10. Chat Completions vs Responses
+
+Every public constructor except `ControlledProvider` takes `api_mode="chat_completions"` or `api_mode="responses"`. `"chat"` is an alias for Chat Completions. `None` uses the family default (Codex defaults to Responses; others default to Chat Completions).
+
+```python
+from aifluxon import DeepSeek, OpenAI
+
+OpenAI("gpt-5.4", api_key="...", api_mode="responses")
+DeepSeek("deepseek-v4-pro", api_key="...", api_mode="responses")
+DeepSeek("deepseek-v4-flash", api_key="...", api_mode="chat_completions")
+```
+
+If the model does not support the requested mode, AIFLUXON falls back to the supported protocol. V4 Flash and V4 Pro both support Responses.
+
 Runnable copies of these examples live in `bindings/python/examples/`.

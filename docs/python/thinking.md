@@ -62,7 +62,7 @@ Agent(
 ```
 
 - Chat: `thinking: { "type": "enabled"|"disabled" }` plus `reasoning_effort` when enabled
-- Responses: `reasoning.effort` (`none` when thinking is off)
+- Responses: `reasoning.effort` (`none` when thinking is off). Select with `DeepSeek(..., api_mode="responses")`. V4 Flash and V4 Pro both support Responses.
 - Values: `low` / `high` / `max`
 
 ## Qwen

@@ -143,6 +143,27 @@ fn deepseek_v4_flash_keeps_responses_and_native_search_shape() {
 }
 
 #[test]
+fn deepseek_v4_pro_keeps_requested_responses_and_maps_low_effort() {
+    let config = config(ApiFamily::DeepSeek, OpenAiApiMode::Responses);
+    assert_eq!(
+        decorate::effective_api_mode(&config, "deepseek-v4-pro"),
+        OpenAiApiMode::Responses
+    );
+    assert_eq!(
+        decorate::effective_api_mode(&config, "deepseek-chat"),
+        OpenAiApiMode::ChatCompletions
+    );
+    let mut features = aifluxon_core::ProviderFeatureRequest::default();
+    features.thinking_mode = Some("enabled".to_string());
+    features.reasoning_effort = Some("low".to_string());
+    let body = decorated_responses(
+        ApiFamily::DeepSeek,
+        &request_with("deepseek-v4-pro", features),
+    );
+    assert_eq!(body["reasoning"]["effort"], "high");
+}
+
+#[test]
 fn qwen_chat_thinking_budget_and_explicit_cache_markers_are_applied() {
     let mut features = aifluxon_core::ProviderFeatureRequest::default();
     features.thinking_mode = Some("enabled".to_string());

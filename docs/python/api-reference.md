@@ -198,11 +198,11 @@ Frozen constructor result. `to_spec()` is used by the native bridge.
 
 ### `OpenAI(model, *, api_key, base_url=None, api_mode=None)`
 
-Default base URL: `https://api.openai.com/v1`.
+Default base URL: `https://api.openai.com/v1`. `api_mode` is `"chat_completions"` (also `"chat"`) or `"responses"`. `None` uses the family default.
 
 ### `DeepSeek(model, *, api_key, base_url=None, api_mode=None)`
 
-Default base URL: `https://api.deepseek.com`.
+Default base URL: `https://api.deepseek.com`. Default API mode: `chat_completions`. `deepseek-v4-flash` and `deepseek-v4-pro` also accept `api_mode="responses"`.
 
 ### `Qwen(model, *, api_key, base_url=None, api_mode=None)`
 

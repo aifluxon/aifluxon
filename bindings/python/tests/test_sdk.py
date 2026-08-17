@@ -11,6 +11,7 @@ from aifluxon import (
     Agent,
     CancelledError,
     ControlledProvider,
+    DeepSeek,
     InvalidConfigurationError,
     JsonFileSessionStore,
     OperationRequested,
@@ -124,6 +125,13 @@ def test_thinking_settings_reject_invalid_values() -> None:
         Agent(provider=ControlledProvider(["x"]), thinking="maybe")
     with pytest.raises(InvalidConfigurationError):
         Agent(provider=ControlledProvider(["x"]), thinking_budget=0)
+
+
+def test_provider_api_mode_is_forwarded_in_spec() -> None:
+    spec = DeepSeek("deepseek-v4-pro", api_key="k", api_mode="responses").to_spec()
+    assert spec["kind"] == "deepseek"
+    assert spec["model"] == "deepseek-v4-pro"
+    assert spec["api_mode"] == "responses"
 
 
 @pytest.mark.asyncio

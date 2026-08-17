@@ -21,9 +21,10 @@ provider = OpenAI(model="gpt-4.1", api_key="...", base_url=None, api_mode=None)
 ```python
 from aifluxon import DeepSeek
 DeepSeek(model="deepseek-chat", api_key="...")
+DeepSeek(model="deepseek-v4-pro", api_key="...", api_mode="responses")
 ```
 
-Default base URL: `https://api.deepseek.com`. Enable thinking on `Agent` with `thinking=True` and `reasoning_effort="low"|"high"|"max"`. Only `deepseek-v4*` models have the toggle. See [Thinking](thinking.md).
+Default base URL: `https://api.deepseek.com`. Default API mode: `chat_completions`. `deepseek-v4-flash` and `deepseek-v4-pro` can use `api_mode="responses"`; other DeepSeek models stay on Chat Completions even if Responses is requested. Enable thinking on `Agent` with `thinking=True` and `reasoning_effort="low"|"high"|"max"`. Only `deepseek-v4*` models have the toggle; `low` is valid on V4 Flash and is raised to `high` on V4 Pro. See [Thinking](thinking.md).
 
 ## Qwen
 
