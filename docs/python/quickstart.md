@@ -1,6 +1,6 @@
 # Quick Start
 
-This page documents APIs that exist in 0.1.0.
+This page documents APIs that exist in 0.1.1.
 
 ## Install
 

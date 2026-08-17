@@ -4,7 +4,7 @@ Python does not implement OAuth. It binds to `aifluxon-api::CodexAuth`.
 
 Credentials live in the OS secure store or an encrypted vault. Python code must not read access tokens, refresh tokens, or ID tokens.
 
-Published 0.1.0 wheels are Windows x86_64 only. The auth architecture is still cross-platform.
+Published 0.1.1 wheels are Windows x86_64 only. The auth architecture is still cross-platform.
 
 ## Login
 

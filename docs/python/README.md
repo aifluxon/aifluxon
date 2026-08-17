@@ -24,8 +24,8 @@ pip install aifluxon
 | -------- | ------ |
 | Windows 10/11 x86_64 | Supported |
 | Windows ARM64 | Not supported |
-| Linux | Not supported in 0.1.0 |
-| macOS | Not supported in 0.1.0 |
+| Linux | Not supported in 0.1.1 |
+| macOS | Not supported in 0.1.1 |
 
 Requires **CPython 3.11–3.14**. Wheels are ABI-specific (`cp3xx-win_amd64`), not a single abi3 wheel.
 

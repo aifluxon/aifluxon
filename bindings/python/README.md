@@ -12,7 +12,7 @@ Python → PyO3 → aifluxon-api → runtime → providers / tools
 pip install aifluxon
 ```
 
-Requires **Windows 10/11 x86_64** and **CPython 3.11–3.14**. Wheels are version-specific (`cp311`–`cp314-win_amd64`), not abi3. Linux, macOS, and Windows ARM64 are not supported in 0.1.0. Installing a published wheel does not require Rust.
+Requires **Windows 10/11 x86_64** and **CPython 3.11–3.14**. Wheels are version-specific (`cp311`–`cp314-win_amd64`), not abi3. Linux, macOS, and Windows ARM64 are not supported in 0.1.1. Installing a published wheel does not require Rust.
 
 License: **Apache-2.0**.
 
