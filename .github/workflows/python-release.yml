@@ -2,15 +2,22 @@ name: python-release
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - "v*"
+    inputs:
+      publish_to_pypi:
+        description: "Publish verified wheels from an existing run to production PyPI"
+        type: boolean
+        default: false
+      source_run_id:
+        description: "Workflow run ID that produced the TestPyPI-verified wheels"
+        type: string
+        required: false
 
 permissions:
   contents: read
 
 jobs:
   build:
+    if: ${{ github.event.inputs.publish_to_pypi != 'true' }}
     runs-on: windows-latest
     strategy:
       fail-fast: false
@@ -28,6 +35,17 @@ jobs:
           args: --release --out dist
           working-directory: bindings/python
           target: x86_64-pc-windows-msvc
+      - name: Reject non-Windows-x64 wheels
+        shell: pwsh
+        run: |
+          $wheels = Get-ChildItem bindings/python/dist -Filter *.whl
+          if (-not $wheels) { throw "No wheels produced" }
+          foreach ($wheel in $wheels) {
+            if ($wheel.Name -notmatch "win_amd64") {
+              throw "Unexpected wheel platform: $($wheel.Name)"
+            }
+          }
+          $wheels | ForEach-Object { $_.Name }
       - uses: actions/upload-artifact@v4
         with:
           name: wheel-cp${{ matrix.python-version }}
@@ -36,7 +54,7 @@ jobs:
 
   publish-testpypi:
     needs: build
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+    if: ${{ github.event.inputs.publish_to_pypi != 'true' }}
     runs-on: ubuntu-latest
     environment: testpypi
     permissions:
@@ -47,6 +65,8 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: List wheels
+        run: ls -la dist && ls dist/*.whl
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
@@ -54,18 +74,45 @@ jobs:
           skip-existing: false
 
   publish-pypi:
-    needs: [build, publish-testpypi]
-    if: startsWith(github.ref, 'refs/tags/')
+    if: ${{ github.event.inputs.publish_to_pypi == 'true' }}
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
       contents: read
+      actions: read
       id-token: write
     steps:
+      - name: Require source run id
+        if: ${{ inputs.source_run_id == '' }}
+        run: |
+          echo "source_run_id is required when publishing to production PyPI" >&2
+          exit 1
       - uses: actions/download-artifact@v4
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.source_run_id }}
           path: dist
           merge-multiple: true
+      - name: Verify win_amd64 wheels only
+        run: |
+          set -euo pipefail
+          ls -la dist
+          shopt -s nullglob
+          wheels=(dist/*.whl)
+          if [ ${#wheels[@]} -eq 0 ]; then
+            echo "No wheels downloaded from run ${{ inputs.source_run_id }}" >&2
+            exit 1
+          fi
+          for wheel in "${wheels[@]}"; do
+            echo "$wheel"
+            case "$wheel" in
+              *win_amd64.whl) ;;
+              *)
+                echo "Refusing non-win_amd64 artifact: $wheel" >&2
+                exit 1
+                ;;
+            esac
+          done
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist
