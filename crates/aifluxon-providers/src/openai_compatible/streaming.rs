@@ -298,5 +298,6 @@ mod live_tests {
         let turn = decoder.finish(sink.as_ref()).unwrap();
         assert_eq!(turn.reasoning, "plan");
         assert_eq!(turn.text, "answer");
+        assert_eq!(turn.opaque["reasoning_content"], "plan");
     }
 }

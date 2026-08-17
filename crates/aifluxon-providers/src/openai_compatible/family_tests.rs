@@ -160,6 +160,58 @@ fn qwen_chat_thinking_budget_and_explicit_cache_markers_are_applied() {
 }
 
 #[test]
+fn deepseek_replays_reasoning_content_on_assistant_history() {
+    let mut request = request_with("deepseek-chat", Default::default());
+    let call_id = aifluxon_core::ToolInvocationId::from_stable_key("call-1");
+    request.messages.insert(
+        0,
+        Message {
+            role: MessageRole::Assistant,
+            content: Vec::new(),
+            tool_calls: vec![aifluxon_core::ToolCall {
+                id: call_id,
+                name: "read_file".to_string(),
+                arguments: json!({ "path": "src/lib.rs" }),
+            }],
+            tool_call_id: None,
+            provider_state: Some(json!({
+                "protocol": "chat_completions",
+                "reasoning_content": "I should inspect the file first.",
+            })),
+        },
+    );
+    let body = decorated_chat(ApiFamily::DeepSeek, &request);
+    assert_eq!(
+        body["messages"][0]["reasoning_content"],
+        "I should inspect the file first."
+    );
+    assert_eq!(body["messages"][0]["role"], "assistant");
+    assert_eq!(
+        body["messages"][0]["tool_calls"][0]["id"],
+        call_id.hyphenated()
+    );
+}
+
+#[test]
+fn openai_does_not_replay_reasoning_content_on_assistant_history() {
+    let mut request = request_with("gpt-4.1", Default::default());
+    request.messages.insert(
+        0,
+        Message {
+            role: MessageRole::Assistant,
+            content: vec![ContentPart::Text("ok".to_string())],
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            provider_state: Some(json!({
+                "reasoning_content": "should stay local",
+            })),
+        },
+    );
+    let body = decorated_chat(ApiFamily::OpenAi, &request);
+    assert!(body["messages"][0].get("reasoning_content").is_none());
+}
+
+#[test]
 fn kimi_session_cache_and_thinking_stay_on_the_kimi_family() {
     let mut features = aifluxon_core::ProviderFeatureRequest::default();
     features.prompt_cache_key = Some("easyphy-kimi-stable".to_string());

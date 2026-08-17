@@ -167,6 +167,7 @@ fn chat_fixture_preserves_visible_reasoning_usage_terminal_and_event_order() {
     assert_eq!(turn.usage.unwrap()["total_tokens"], 5);
     assert_eq!(turn.opaque["protocol"], "chat_completions");
     assert_eq!(turn.opaque["finish_reason"], "stop");
+    assert_eq!(turn.opaque["reasoning_content"], "先看文件");
     assert_eq!(
         events,
         vec![

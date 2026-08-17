@@ -169,16 +169,21 @@ impl ChatCompletionsTurnAssembler {
         } else {
             ProviderTerminal::Stop
         };
+        let reasoning = self.reasoning.emitted().to_string();
+        let mut opaque = json!({
+            "protocol": "chat_completions",
+            "finish_reason": self.finish_reason,
+        });
+        if !reasoning.is_empty() {
+            opaque["reasoning_content"] = json!(reasoning);
+        }
         ModelTurn {
             text: self.text.emitted().to_string(),
-            reasoning: self.reasoning.emitted().to_string(),
+            reasoning,
             tool_calls,
             usage: self.usage,
             terminal,
-            opaque: json!({
-                "protocol": "chat_completions",
-                "finish_reason": self.finish_reason,
-            }),
+            opaque,
         }
     }
 }

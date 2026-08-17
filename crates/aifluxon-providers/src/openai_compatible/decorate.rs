@@ -1,6 +1,6 @@
 use super::{ApiFamily, OpenAiApiMode, OpenAiCompatibleConfig};
 use crate::{codex, deepseek, gemini, kimi, openai, qwen};
-use aifluxon_core::ModelTurnRequest;
+use aifluxon_core::{MessageRole, ModelTurnRequest};
 use serde_json::{json, Value};
 
 const IMAGE_GENERATION_INSTRUCTION: &str = "When the user asks to generate or edit a raster image, use the native image_generation tool. Do not substitute SVG, HTML, placeholder files, or an unsupported-capability claim. The application will save and display the returned image.";
@@ -59,6 +59,7 @@ fn decorate_chat(body: &mut Value, config: &OpenAiCompatibleConfig, request: &Mo
                 );
                 deepseek::apply_chat_thinking(body, thinking_enabled(&request.features), &effort);
             }
+            replay_assistant_reasoning_content(body, request);
         }
         ApiFamily::Qwen => {
             qwen::apply_chat_thinking(
@@ -81,10 +82,32 @@ fn decorate_chat(body: &mut Value, config: &OpenAiCompatibleConfig, request: &Mo
         ApiFamily::Kimi => {
             kimi::apply_chat_thinking(body, &request.model);
             kimi::apply_chat_limits(body, 32_768);
+            replay_assistant_reasoning_content(body, request);
         }
         ApiFamily::Codex => {}
     }
     apply_tool_flags(body, config);
+}
+
+fn replay_assistant_reasoning_content(body: &mut Value, request: &ModelTurnRequest) {
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for (wire, original) in messages.iter_mut().zip(request.messages.iter()) {
+        if original.role != MessageRole::Assistant {
+            continue;
+        }
+        if let Some(reasoning) = original
+            .provider_state
+            .as_ref()
+            .and_then(|state| state.get("reasoning_content"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            wire["reasoning_content"] = json!(reasoning);
+        }
+    }
 }
 
 fn decorate_responses(
