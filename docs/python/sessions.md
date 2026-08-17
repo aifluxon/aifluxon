@@ -31,6 +31,8 @@ await session.start("prompt")  # returns Run
 await session.run("prompt")    # returns RunResult
 ```
 
+`system_prompt` on `Agent` or `Session.start` / `Session.run` is prepended as a leading system message. A later non-empty `system_prompt` on the same session replaces that leading system message; it is not stacked.
+
 Non-UUID keys passed to `open_or_create_session` are mapped with a stable hash. UUID strings are parsed as-is.
 
 ## `InMemorySessionStore`

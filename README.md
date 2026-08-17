@@ -233,10 +233,41 @@ The runtime does not impose a product-specific permission model. Hosts provide t
 
 See [Tools and policy](docs/python/tools-and-policy.md).
 
+## Authentication
+
+AIFLUXON is the Codex OAuth authority. Hosts choose a secret-store namespace and own browser/UI. The runtime never sees OAuth tokens.
+
+```rust
+let auth = aifluxon_api::CodexAuth::builder()
+    .secret_store(aifluxon_api::SystemKeyringStore::new("My Product"))
+    .build()?;
+let login = auth.begin_login().await?;
+println!("{}", login.authorization_url());
+let account = login.wait().await?;
+let provider = auth.provider("gpt-5.6-codex", Some(account.id.clone()))?;
+```
+
+Python:
+
+```python
+from aifluxon import Agent, CodexAuth
+
+auth = CodexAuth()
+login = await auth.login()
+print(login.authorization_url)
+account = await login.wait()
+agent = Agent(auth.provider("gpt-5.6-codex", account_id=account.id))
+```
+
+Static API keys remain available, including `Codex(model, api_key=...)`. OAuth credentials are stored in the OS keyring or an explicit encrypted vault. There is no plaintext JSON fallback.
+
+See [Authentication](docs/auth/README.md).
+
 ## Documentation
 
 ### Core
 
+- [Authentication](docs/auth/README.md)
 - [Architecture](docs/architecture.md)
 - [Contributing](CONTRIBUTING.md)
 - [Changelog](CHANGELOG.md)
@@ -252,6 +283,8 @@ See [Tools and policy](docs/python/tools-and-policy.md).
 - [Tools and policy](docs/python/tools-and-policy.md)
 - [Errors](docs/python/errors.md)
 - [Python architecture](docs/python/architecture.md)
+- [Codex OAuth](docs/python/auth.md)
+- [Thinking](docs/python/thinking.md)
 
 Examples: [`bindings/python/examples`](bindings/python/examples).
 
@@ -262,6 +295,7 @@ crates/
   aifluxon-core/       domain contracts and shared types
   aifluxon-runtime/    run lifecycle, events, tools, operations
   aifluxon-providers/  provider protocols and HTTP transport
+  aifluxon-auth/       Codex OAuth, secret stores, credential sources
   aifluxon-api/        stable facade for hosts
 
 bindings/python/       PyO3 package `aifluxon`

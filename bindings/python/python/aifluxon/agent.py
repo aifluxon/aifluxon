@@ -8,10 +8,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from . import _native
-from .errors import CancelledError, FailedError, call_native
+from .errors import CancelledError, FailedError, InvalidConfigurationError, call_native
 from .events import Completed, Event, Failed, event_from_payload, is_terminal
 from .providers import ProviderConfig
+from .auth import CodexProvider
 from .session import InMemorySessionStore, JsonFileSessionStore, SessionStore
+from .thinking import ThinkingSettings, _UNSET, merge_thinking_settings, thinking_settings
 from .tools import AllowAllPolicy, descriptor_from_callable
 
 
@@ -34,28 +36,41 @@ class Agent:
 
     def __init__(
         self,
-        provider: ProviderConfig,
+        provider: ProviderConfig | CodexProvider,
         *,
         store: SessionStore | None = None,
         tools: Sequence[Callable[..., Any]] | None = None,
         policy: Any | None = None,
         max_model_rounds: int = 32,
         max_tool_invocations: int = 64,
+        system_prompt: str | None = None,
+        reasoning_effort: str | None = None,
+        thinking: bool | str | None = None,
+        thinking_budget: int | str | None = None,
     ) -> None:
         store = store or InMemorySessionStore()
         store_path = store.path if isinstance(store, JsonFileSessionStore) else None
         policy_callback = None if policy is None or isinstance(policy, AllowAllPolicy) else _policy_bridge(policy)
+        oauth_provider = provider._native if isinstance(provider, CodexProvider) else None
+        spec = "{}" if oauth_provider is not None else json.dumps(provider.to_spec())
         self._native = call_native(
             _native.NativeAgent,
-            json.dumps(provider.to_spec()),
+            spec,
             store_path,
             policy_callback,
             max_model_rounds,
             max_tool_invocations,
+            oauth_provider,
         )
         for fn in tools or ():
             self._register_tool(fn)
         self._store = store
+        self._system_prompt = _normalize_system_prompt(system_prompt)
+        self._thinking = thinking_settings(
+            reasoning_effort=reasoning_effort,
+            thinking=thinking,
+            thinking_budget=thinking_budget,
+        )
 
     @property
     def provider_id(self) -> str:
@@ -65,12 +80,75 @@ class Agent:
     def model(self) -> str:
         return self._native.model()
 
-    async def start(self, prompt: str, *, session_id: str | None = None) -> Run:
-        run_id = await asyncio.to_thread(call_native, self._native.start, prompt, session_id)
+    @property
+    def system_prompt(self) -> str | None:
+        return self._system_prompt
+
+    @property
+    def thinking_settings(self) -> ThinkingSettings:
+        return self._thinking
+
+    @property
+    def reasoning_effort(self) -> str | None:
+        return self._thinking.reasoning_effort
+
+    @property
+    def thinking(self) -> str | None:
+        return self._thinking.thinking_mode
+
+    @property
+    def thinking_budget(self) -> str | None:
+        return self._thinking.thinking_budget
+
+    async def start(
+        self,
+        prompt: str,
+        *,
+        session_id: str | None = None,
+        system_prompt: Any = _UNSET,
+        reasoning_effort: Any = _UNSET,
+        thinking: Any = _UNSET,
+        thinking_budget: Any = _UNSET,
+    ) -> Run:
+        settings = merge_thinking_settings(
+            self._thinking,
+            reasoning_effort=reasoning_effort,
+            thinking=thinking,
+            thinking_budget=thinking_budget,
+        )
+        prompt_system = (
+            self._system_prompt
+            if system_prompt is _UNSET
+            else _normalize_system_prompt(system_prompt)
+        )
+        run_id = await asyncio.to_thread(
+            call_native,
+            self._native.start,
+            prompt,
+            session_id,
+            json.dumps(settings.to_payload()),
+            prompt_system,
+        )
         return Run(self, run_id, session_id)
 
-    async def run(self, prompt: str, *, session_id: str | None = None) -> RunResult:
-        handle = await self.start(prompt, session_id=session_id)
+    async def run(
+        self,
+        prompt: str,
+        *,
+        session_id: str | None = None,
+        system_prompt: Any = _UNSET,
+        reasoning_effort: Any = _UNSET,
+        thinking: Any = _UNSET,
+        thinking_budget: Any = _UNSET,
+    ) -> RunResult:
+        handle = await self.start(
+            prompt,
+            session_id=session_id,
+            system_prompt=system_prompt,
+            reasoning_effort=reasoning_effort,
+            thinking=thinking,
+            thinking_budget=thinking_budget,
+        )
         return await handle.result()
 
     async def create_session(self) -> Session:
@@ -112,11 +190,41 @@ class Session:
         self.id = session_id
         self.revision = revision
 
-    async def start(self, prompt: str) -> Run:
-        return await self._agent.start(prompt, session_id=self.id)
+    async def start(
+        self,
+        prompt: str,
+        *,
+        system_prompt: Any = _UNSET,
+        reasoning_effort: Any = _UNSET,
+        thinking: Any = _UNSET,
+        thinking_budget: Any = _UNSET,
+    ) -> Run:
+        return await self._agent.start(
+            prompt,
+            session_id=self.id,
+            system_prompt=system_prompt,
+            reasoning_effort=reasoning_effort,
+            thinking=thinking,
+            thinking_budget=thinking_budget,
+        )
 
-    async def run(self, prompt: str) -> RunResult:
-        return await self._agent.run(prompt, session_id=self.id)
+    async def run(
+        self,
+        prompt: str,
+        *,
+        system_prompt: Any = _UNSET,
+        reasoning_effort: Any = _UNSET,
+        thinking: Any = _UNSET,
+        thinking_budget: Any = _UNSET,
+    ) -> RunResult:
+        return await self._agent.run(
+            prompt,
+            session_id=self.id,
+            system_prompt=system_prompt,
+            reasoning_effort=reasoning_effort,
+            thinking=thinking,
+            thinking_budget=thinking_budget,
+        )
 
 
 class Run:
@@ -271,6 +379,18 @@ def _policy_bridge(policy: Any) -> Callable[[str, str, str], str]:
         return json.dumps(decision)
 
     return call
+
+
+def _normalize_system_prompt(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise InvalidConfigurationError(
+            "system_prompt must be a string.",
+            kind="InvalidConfiguration",
+        )
+    text = value.strip()
+    return text or None
 
 
 def _normalize_tool_result(result: Any) -> Any:

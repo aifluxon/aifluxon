@@ -54,6 +54,8 @@ asyncio.run(main())
 - [Events](events.md)
 - [Tools and policy](tools-and-policy.md)
 - [Errors](errors.md)
+- [Codex OAuth](auth.md)
+- [Thinking](thinking.md)
 - [Architecture](architecture.md)
 
 ## Providers
@@ -65,7 +67,7 @@ Included:
 - Qwen
 - Kimi
 - Gemini
-- Codex
+- Codex (static API key or Codex OAuth via `CodexAuth`)
 - Custom OpenAI-compatible endpoints
 - `ControlledProvider` (offline)
 

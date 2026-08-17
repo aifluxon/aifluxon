@@ -4,6 +4,7 @@ members = [
   "crates/aifluxon-core",
   "crates/aifluxon-runtime",
   "crates/aifluxon-providers",
+  "crates/aifluxon-auth",
   "crates/aifluxon-api",
 ]
 exclude = ["bindings/python"]

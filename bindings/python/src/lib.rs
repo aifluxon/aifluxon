@@ -1,11 +1,13 @@
 use aifluxon_api::{
-    envelope_to_json, operation_snapshot_to_json, register_provider_from_json, user_prompt_request,
-    Aifluxon, AifluxonError, AifluxonErrorKind, AllowAllToolPolicy, JsonFileProviderStateStore,
-    JsonFileSessionStore, NoopRunEventSink, OperationDecision, OperationId, OperationMode,
-    PendingOperationDraft, ProviderBinding, ProviderRegistry, RunHandle, RunId, RunLimits,
-    RunSnapshot, SessionId, ToolDecision, ToolDescriptor, ToolEffect, ToolExecutionContext,
-    ToolExecutionError, ToolExecutor, ToolInvocation, ToolPolicy, ToolPolicyInput, ToolRegistry,
-    ToolResult,
+    envelope_to_json, operation_snapshot_to_json, register_provider_from_json,
+    user_prompt_request_with_system, Aifluxon, AifluxonAuthError, AifluxonError,
+    AifluxonErrorKind, AllowAllToolPolicy, CodexAuth, CodexLoginAttempt, CodexProviderHandle,
+    EncryptedFileSecretStore, JsonFileProviderStateStore, JsonFileSessionStore, MemorySecretStore,
+    NoopRunEventSink, OperationDecision, OperationId, OperationMode, PendingOperationDraft,
+    ProviderBinding, ProviderFeatureRequest, ProviderRegistry, RunHandle, RunId, RunLimits,
+    RunSnapshot, SessionId, SystemKeyringStore, ToolDecision, ToolDescriptor, ToolEffect,
+    ToolExecutionContext, ToolExecutionError, ToolExecutor, ToolInvocation, ToolPolicy,
+    ToolPolicyInput, ToolRegistry, ToolResult, DEFAULT_SERVICE_NAME, unlock_encrypted_store,
 };
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -33,17 +35,22 @@ struct NativeAgent {
 #[pymethods]
 impl NativeAgent {
     #[new]
-    #[pyo3(signature = (provider_spec, store_path=None, policy_callback=None, max_model_rounds=32, max_tool_invocations=64))]
+    #[pyo3(signature = (provider_spec, store_path=None, policy_callback=None, max_model_rounds=32, max_tool_invocations=64, oauth_provider=None))]
     fn new(
         provider_spec: &str,
         store_path: Option<&str>,
         policy_callback: Option<Py<PyAny>>,
         max_model_rounds: u32,
         max_tool_invocations: u32,
+        oauth_provider: Option<&NativeCodexProvider>,
     ) -> PyResult<Self> {
-        let spec: Value = serde_json::from_str(provider_spec).map_err(invalid_config)?;
         let registry = ProviderRegistry::new();
-        let binding = register_provider_from_json(&registry, &spec).map_err(map_error)?;
+        let binding = if let Some(oauth) = oauth_provider {
+            oauth.inner.register(&registry).map_err(map_error)?
+        } else {
+            let spec: Value = serde_json::from_str(provider_spec).map_err(invalid_config)?;
+            register_provider_from_json(&registry, &spec).map_err(map_error)?
+        };
         let tools = Arc::new(ToolRegistry::new());
         let policy: Arc<dyn ToolPolicy> = match policy_callback {
             Some(callback) => Arc::new(PythonToolPolicy { callback }),
@@ -90,7 +97,15 @@ impl NativeAgent {
             .map_err(|error| invalid_config(error.to_string()))
     }
 
-    fn start(&self, py: Python<'_>, prompt: &str, session_id: Option<&str>) -> PyResult<String> {
+    #[pyo3(signature = (prompt, session_id=None, features_json=None, system_prompt=None))]
+    fn start(
+        &self,
+        py: Python<'_>,
+        prompt: &str,
+        session_id: Option<&str>,
+        features_json: Option<&str>,
+        system_prompt: Option<&str>,
+    ) -> PyResult<String> {
         let inner = self.inner.clone();
         let provider = self.binding.provider_id.clone();
         let model = self.binding.model.clone();
@@ -100,10 +115,21 @@ impl NativeAgent {
             .map(SessionId::parse_or_stable_key)
             .transpose()
             .map_err(invalid_request)?;
+        let features = parse_features(features_json)?;
+        let system_prompt = system_prompt
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
         let handle = py
             .detach(|| {
-                RUNTIME.block_on(inner.start(user_prompt_request(
-                    provider, model, prompt, session, limits,
+                RUNTIME.block_on(inner.start(user_prompt_request_with_system(
+                    provider,
+                    model,
+                    prompt,
+                    session,
+                    limits,
+                    features,
+                    system_prompt,
                 )))
             })
             .map_err(map_error)?;
@@ -433,6 +459,46 @@ fn session_record_json(record: &aifluxon_api::SessionRecord) -> Value {
     })
 }
 
+fn parse_features(raw: Option<&str>) -> PyResult<ProviderFeatureRequest> {
+    let Some(raw) = raw
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "{}")
+    else {
+        return Ok(ProviderFeatureRequest::default());
+    };
+    let value: Value = serde_json::from_str(raw).map_err(invalid_request)?;
+    Ok(ProviderFeatureRequest {
+        web_search: false,
+        image_generation: false,
+        reasoning_effort: optional_feature_str(&value, "reasoning_effort")?,
+        thinking_mode: optional_feature_str(&value, "thinking_mode")?,
+        thinking_budget: optional_feature_str(&value, "thinking_budget")?,
+        prompt_cache_key: None,
+        explicit_cache: false,
+    })
+}
+
+fn optional_feature_str(value: &Value, field: &str) -> PyResult<Option<String>> {
+    match value.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(text)) => {
+            let text = text.trim();
+            if text.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(text.to_string()))
+            }
+        }
+        Some(Value::Number(number)) if field == "thinking_budget" => Ok(number
+            .as_u64()
+            .filter(|value| *value > 0)
+            .map(|value| value.to_string())),
+        _ => Err(invalid_request(format!(
+            "Feature `{field}` must be a string."
+        ))),
+    }
+}
+
 fn required_str(value: &Value, field: &str) -> PyResult<String> {
     value
         .get(field)
@@ -473,8 +539,313 @@ fn invalid_request(error: impl ToString) -> PyErr {
     native_error(AifluxonErrorKind::InvalidRequest, error.to_string())
 }
 
+fn map_auth_error(error: AifluxonAuthError) -> PyErr {
+    PyRuntimeError::new_err(
+        json!({
+            "kind": error.kind().as_str(),
+            "message": error.message(),
+        })
+        .to_string(),
+    )
+}
+
+fn account_json(account: &aifluxon_api::CodexAccount) -> Value {
+    json!({
+        "id": account.id,
+        "email": account.email,
+        "expires_at": account.expires_at,
+    })
+}
+
+fn status_json(status: &aifluxon_api::CodexAuthStatus) -> Value {
+    json!({
+        "account": account_json(&status.account),
+        "state": format!("{:?}", status.state),
+    })
+}
+
+#[pyclass]
+struct NativeSystemKeyringStore {
+    service_name: String,
+}
+
+#[pymethods]
+impl NativeSystemKeyringStore {
+    #[new]
+    #[pyo3(signature = (service_name=None))]
+    fn new(service_name: Option<String>) -> Self {
+        Self {
+            service_name: service_name.unwrap_or_else(|| DEFAULT_SERVICE_NAME.to_string()),
+        }
+    }
+
+    #[getter]
+    fn service_name(&self) -> String {
+        self.service_name.clone()
+    }
+}
+
+#[pyclass]
+struct NativeMemorySecretStore {
+    inner: Arc<MemorySecretStore>,
+}
+
+#[pymethods]
+impl NativeMemorySecretStore {
+    #[new]
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(MemorySecretStore::new()),
+        }
+    }
+}
+
+#[pyclass]
+struct NativeEncryptedFileSecretStore {
+    inner: Arc<EncryptedFileSecretStore>,
+}
+
+#[pymethods]
+impl NativeEncryptedFileSecretStore {
+    #[new]
+    fn new(path: &str) -> Self {
+        Self {
+            inner: Arc::new(EncryptedFileSecretStore::new(path)),
+        }
+    }
+
+    #[getter]
+    fn path(&self) -> String {
+        self.inner.path().display().to_string()
+    }
+
+    #[getter]
+    fn is_unlocked(&self) -> bool {
+        self.inner.is_unlocked()
+    }
+
+    fn unlock(&self, password: &str) -> PyResult<()> {
+        unlock_encrypted_store(&self.inner, password).map_err(map_auth_error)
+    }
+
+    fn lock(&self) {
+        self.inner.lock();
+    }
+}
+
+enum NativeSecretStoreKind {
+    System(String),
+    Memory(Arc<MemorySecretStore>),
+    Encrypted(Arc<EncryptedFileSecretStore>),
+}
+
+#[pyclass]
+struct NativeCodexAuth {
+    inner: CodexAuth,
+}
+
+impl NativeCodexAuth {
+    fn from_store(kind: NativeSecretStoreKind) -> PyResult<Self> {
+        let auth = match kind {
+            NativeSecretStoreKind::System(service) => CodexAuth::builder()
+                .secret_store(SystemKeyringStore::new(service))
+                .build(),
+            NativeSecretStoreKind::Memory(store) => CodexAuth::builder()
+                .secret_store_shared(store as Arc<dyn aifluxon_api::SecretStore>)
+                .build(),
+            NativeSecretStoreKind::Encrypted(store) => CodexAuth::builder()
+                .secret_store_shared(store as Arc<dyn aifluxon_api::SecretStore>)
+                .build(),
+        }
+        .map_err(map_auth_error)?;
+        Ok(Self { inner: auth })
+    }
+}
+
+#[pymethods]
+impl NativeCodexAuth {
+    #[new]
+    #[pyo3(signature = (secret_store=None))]
+    fn new(secret_store: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
+        let Some(store) = secret_store else {
+            return Self::from_store(NativeSecretStoreKind::System(
+                DEFAULT_SERVICE_NAME.to_string(),
+            ));
+        };
+        if let Ok(system) = store.extract::<PyRef<NativeSystemKeyringStore>>() {
+            return Self::from_store(NativeSecretStoreKind::System(system.service_name.clone()));
+        }
+        if let Ok(memory) = store.extract::<PyRef<NativeMemorySecretStore>>() {
+            return Self::from_store(NativeSecretStoreKind::Memory(memory.inner.clone()));
+        }
+        if let Ok(encrypted) = store.extract::<PyRef<NativeEncryptedFileSecretStore>>() {
+            return Self::from_store(NativeSecretStoreKind::Encrypted(encrypted.inner.clone()));
+        }
+        Err(invalid_config(
+            "CodexAuth secret_store must be SystemKeyringStore, MemorySecretStore, or EncryptedFileSecretStore.",
+        ))
+    }
+
+    fn login(&self, py: Python<'_>) -> PyResult<NativeCodexLoginAttempt> {
+        let auth = self.inner.clone();
+        let attempt = py
+            .detach(|| RUNTIME.block_on(auth.begin_login()))
+            .map_err(map_auth_error)?;
+        Ok(NativeCodexLoginAttempt {
+            authorization_url: attempt.authorization_url().to_string(),
+            inner: Mutex::new(Some(attempt)),
+        })
+    }
+
+    fn accounts(&self, py: Python<'_>) -> PyResult<String> {
+        let auth = self.inner.clone();
+        let accounts = py
+            .detach(|| RUNTIME.block_on(auth.accounts()))
+            .map_err(map_auth_error)?;
+        Ok(json!(accounts
+            .iter()
+            .map(account_json)
+            .collect::<Vec<_>>())
+        .to_string())
+    }
+
+    fn status(&self, py: Python<'_>, account_id: &str) -> PyResult<String> {
+        let auth = self.inner.clone();
+        let account_id = account_id.to_string();
+        let status = py
+            .detach(|| RUNTIME.block_on(auth.status(&account_id)))
+            .map_err(map_auth_error)?;
+        Ok(status_json(&status).to_string())
+    }
+
+    fn refresh(&self, py: Python<'_>, account_id: &str) -> PyResult<String> {
+        let auth = self.inner.clone();
+        let account_id = account_id.to_string();
+        let status = py
+            .detach(|| RUNTIME.block_on(auth.refresh(&account_id)))
+            .map_err(map_auth_error)?;
+        Ok(status_json(&status).to_string())
+    }
+
+    fn logout(&self, py: Python<'_>, account_id: &str) -> PyResult<()> {
+        let auth = self.inner.clone();
+        let account_id = account_id.to_string();
+        py.detach(|| RUNTIME.block_on(auth.logout(&account_id)))
+            .map_err(map_auth_error)
+    }
+
+    fn provider(&self, model: &str, account_id: Option<&str>) -> PyResult<NativeCodexProvider> {
+        let handle = self
+            .inner
+            .provider(model, account_id.map(ToOwned::to_owned))
+            .map_err(map_auth_error)?;
+        Ok(NativeCodexProvider { inner: handle })
+    }
+
+    fn seed_account(
+        &self,
+        account_id: &str,
+        access_token: &str,
+        refresh_token: &str,
+        id_token: &str,
+    ) -> PyResult<String> {
+        let account = self
+            .inner
+            .seed_account_for_tests(account_id, access_token, refresh_token, id_token)
+            .map_err(map_auth_error)?;
+        Ok(account_json(&account).to_string())
+    }
+}
+
+#[pyclass]
+struct NativeCodexLoginAttempt {
+    authorization_url: String,
+    inner: Mutex<Option<CodexLoginAttempt>>,
+}
+
+#[pymethods]
+impl NativeCodexLoginAttempt {
+    #[getter]
+    fn authorization_url(&self) -> String {
+        self.authorization_url.clone()
+    }
+
+    fn wait(&self, py: Python<'_>) -> PyResult<String> {
+        let attempt = self.take_attempt()?;
+        py.detach(|| RUNTIME.block_on(attempt.wait()))
+            .map(|account| account_json(&account).to_string())
+            .map_err(map_auth_error)
+    }
+
+    fn cancel(&self, py: Python<'_>) -> PyResult<()> {
+        if let Some(attempt) = self.take_attempt_optional() {
+            py.detach(|| RUNTIME.block_on(attempt.cancel()));
+        }
+        Ok(())
+    }
+}
+
+impl NativeCodexLoginAttempt {
+    fn take_attempt(&self) -> PyResult<CodexLoginAttempt> {
+        self.take_attempt_optional().ok_or_else(|| {
+            PyRuntimeError::new_err(
+                json!({
+                    "kind": "Cancelled",
+                    "message": "Codex login attempt is no longer active.",
+                })
+                .to_string(),
+            )
+        })
+    }
+
+    fn take_attempt_optional(&self) -> Option<CodexLoginAttempt> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+    }
+}
+
+#[pyclass]
+struct NativeCodexProvider {
+    inner: CodexProviderHandle,
+}
+
+#[pymethods]
+impl NativeCodexProvider {
+    #[getter]
+    fn provider_id(&self) -> String {
+        self.inner.provider_id().as_str().to_string()
+    }
+
+    #[getter]
+    fn model(&self) -> String {
+        self.inner.model().to_string()
+    }
+
+    #[getter]
+    fn account_id(&self) -> String {
+        self.inner.account_id().to_string()
+    }
+
+    fn spec_json(&self) -> String {
+        json!({
+            "kind": "codex_oauth",
+            "model": self.inner.model(),
+            "account_id": self.inner.account_id(),
+        })
+        .to_string()
+    }
+}
+
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<NativeAgent>()?;
+    m.add_class::<NativeCodexAuth>()?;
+    m.add_class::<NativeCodexLoginAttempt>()?;
+    m.add_class::<NativeCodexProvider>()?;
+    m.add_class::<NativeSystemKeyringStore>()?;
+    m.add_class::<NativeMemorySecretStore>()?;
+    m.add_class::<NativeEncryptedFileSecretStore>()?;
     Ok(())
 }

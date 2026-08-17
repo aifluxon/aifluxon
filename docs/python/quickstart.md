@@ -90,4 +90,54 @@ Deferred commit uses `await run.commit_operation(operation_id)` instead of flatt
 await run.cancel()
 ```
 
+## 7. Codex OAuth
+
+```python
+from aifluxon import Agent, CodexAuth
+
+auth = CodexAuth()
+login = await auth.login()
+print(login.authorization_url)
+account = await login.wait()
+agent = Agent(auth.provider("gpt-5.6-codex", account_id=account.id))
+```
+
+Python never receives access tokens. See [Codex OAuth](auth.md) and `bindings/python/examples/codex_oauth.py`.
+
+## 8. Thinking / reasoning effort
+
+```python
+from aifluxon import Agent, OpenAI, DeepSeek, Qwen
+
+agent = Agent(OpenAI("gpt-5.4", api_key="..."), reasoning_effort="high")
+await agent.run("Inspect this project")
+await agent.run("Quick check", reasoning_effort="low")
+
+deepseek = Agent(
+    DeepSeek("deepseek-v4-flash", api_key="..."),
+    thinking=True,
+    reasoning_effort="high",
+)
+qwen = Agent(Qwen("qwen-plus", api_key="..."), thinking=True, thinking_budget=8192)
+```
+
+Kimi enables thinking from the model name. See [Thinking](thinking.md) and `bindings/python/examples/thinking.py`.
+
+## 9. System prompt
+
+AIFLUXON does not ship a product persona. Pass your own host instructions with `system_prompt=`.
+
+```python
+from aifluxon import Agent, OpenAI
+
+agent = Agent(
+    OpenAI("gpt-5.4", api_key="..."),
+    system_prompt="You are a concise laboratory reviewer. Reply in Chinese.",
+)
+await agent.run("Summarize the method.")
+await agent.run("Now translate.", system_prompt="You are a translator.")
+```
+
+On a session, a new `system_prompt` replaces the leading system message instead of stacking another copy. See `bindings/python/examples/system_prompt.py`.
+
 Runnable copies of these examples live in `bindings/python/examples/`.

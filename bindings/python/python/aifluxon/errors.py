@@ -56,6 +56,38 @@ class InternalError(AifluxonError):
     """An unexpected internal backend failure."""
 
 
+class AuthenticationRequiredError(AifluxonError):
+    """No Codex account is signed in."""
+
+
+class AccountSelectionRequiredError(AifluxonError):
+    """More than one Codex account is signed in and none was selected."""
+
+
+class AccountNotFoundError(AifluxonError):
+    """The requested Codex account is not signed in."""
+
+
+class CallbackTimeoutError(AifluxonError):
+    """The Codex OAuth callback did not complete in time."""
+
+
+class TokenRefreshError(AifluxonError):
+    """Refreshing Codex credentials failed."""
+
+
+class CredentialStoreUnavailableError(AifluxonError):
+    """The configured credential store is unavailable."""
+
+
+class CredentialStoreLockedError(AifluxonError):
+    """The encrypted credential vault is locked."""
+
+
+class CredentialCorruptedError(AifluxonError):
+    """Stored Codex credentials could not be read safely."""
+
+
 _KIND_MAP: dict[str, type[AifluxonError]] = {
     "InvalidConfiguration": InvalidConfigurationError,
     "InvalidRequest": InvalidRequestError,
@@ -70,6 +102,15 @@ _KIND_MAP: dict[str, type[AifluxonError]] = {
     "RuntimeUnavailable": InternalError,
     "Failed": FailedError,
     "Internal": InternalError,
+    "AuthenticationRequired": AuthenticationRequiredError,
+    "AccountSelectionRequired": AccountSelectionRequiredError,
+    "AccountNotFound": AccountNotFoundError,
+    "CallbackTimeout": CallbackTimeoutError,
+    "TokenRefresh": TokenRefreshError,
+    "CredentialStoreUnavailable": CredentialStoreUnavailableError,
+    "CredentialStoreLocked": CredentialStoreLockedError,
+    "CredentialCorrupted": CredentialCorruptedError,
+    "Configuration": InvalidConfigurationError,
 }
 
 

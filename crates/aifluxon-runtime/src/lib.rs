@@ -28,7 +28,13 @@ mod crate_boundary {
     #[test]
     fn runtime_manifest_forbids_host_and_platform_dependencies() {
         let manifest = include_str!("../Cargo.toml");
-        for forbidden in ["tauri", "windows-sys", "nix", "portable-pty"] {
+        for forbidden in [
+            "tauri",
+            "windows-sys",
+            "nix",
+            "portable-pty",
+            "aifluxon-auth",
+        ] {
             assert!(
                 !manifest.contains(forbidden),
                 "aifluxon-runtime must not depend on {forbidden}"

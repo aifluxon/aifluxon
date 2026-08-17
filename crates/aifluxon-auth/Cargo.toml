@@ -1,0 +1,30 @@
+[package]
+name = "aifluxon-auth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "OAuth identity, secret storage, and credential sources"
+
+[dependencies]
+argon2 = { version = "0.5", features = ["std"] }
+async-trait.workspace = true
+base64 = "0.22"
+chacha20poly1305 = "0.10"
+directories = "6"
+hex = "0.4"
+keyring = "2"
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+thiserror.workspace = true
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+url = "2"
+zeroize = { version = "1", features = ["zeroize_derive"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }

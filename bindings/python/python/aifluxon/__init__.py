@@ -1,8 +1,15 @@
 from .agent import Agent, Run, RunResult, Session
 from .errors import (
+    AccountNotFoundError,
+    AccountSelectionRequiredError,
     AifluxonError,
+    AuthenticationRequiredError,
     BudgetExceededError,
+    CallbackTimeoutError,
     CancelledError,
+    CredentialCorruptedError,
+    CredentialStoreLockedError,
+    CredentialStoreUnavailableError,
     FailedError,
     InternalError,
     InvalidConfigurationError,
@@ -10,7 +17,18 @@ from .errors import (
     PolicyError,
     ProviderError,
     StateConflictError,
+    TokenRefreshError,
     ToolError,
+)
+from .auth import (
+    CodexAccount,
+    CodexAuth,
+    CodexAuthStatus,
+    CodexLoginAttempt,
+    CodexProvider,
+    EncryptedFileSecretStore,
+    MemorySecretStore,
+    SystemKeyringStore,
 )
 from .events import (
     ArtifactProduced,
@@ -38,6 +56,7 @@ from .providers import (
     ProviderConfig,
     Qwen,
 )
+from .thinking import ThinkingSettings
 from .session import InMemorySessionStore, JsonFileSessionStore, SessionStore
 from .tools import (
     AllowAllPolicy,
@@ -49,18 +68,31 @@ from .tools import (
 __version__ = "0.1.0"
 
 __all__ = [
+    "AccountNotFoundError",
+    "AccountSelectionRequiredError",
     "Agent",
     "AllowAllPolicy",
     "ArtifactProduced",
     "AifluxonError",
+    "AuthenticationRequiredError",
     "BudgetExceededError",
+    "CallbackTimeoutError",
     "Cancelled",
     "CancelledError",
     "Codex",
+    "CodexAccount",
+    "CodexAuth",
+    "CodexAuthStatus",
+    "CodexLoginAttempt",
+    "CodexProvider",
     "Completed",
     "ControlledProvider",
+    "CredentialCorruptedError",
+    "CredentialStoreLockedError",
+    "CredentialStoreUnavailableError",
     "Custom",
     "DeepSeek",
+    "EncryptedFileSecretStore",
     "Event",
     "Failed",
     "FailedError",
@@ -71,6 +103,7 @@ __all__ = [
     "InvalidRequestError",
     "JsonFileSessionStore",
     "Kimi",
+    "MemorySecretStore",
     "OpenAI",
     "OperationRequested",
     "PolicyError",
@@ -86,7 +119,10 @@ __all__ = [
     "SessionStore",
     "StateChanged",
     "StateConflictError",
+    "SystemKeyringStore",
     "TextDelta",
+    "ThinkingSettings",
+    "TokenRefreshError",
     "ToolEffect",
     "ToolError",
     "ToolFinished",

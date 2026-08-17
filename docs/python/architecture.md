@@ -25,6 +25,10 @@ It must not depend on:
 
 If Python needs a capability the facade lacks, add it to `aifluxon-api` first.
 
+Thinking / reasoning effort is not a Python protocol. `Agent` forwards `reasoning_effort`, `thinking_mode`, and `thinking_budget` through `aifluxon-api` as `ProviderFeatureRequest`. Vendor wire mapping stays in `aifluxon-providers`.
+
+`system_prompt` is host-owned text. Python prepends it as a canonical `role=system` message through `aifluxon-api`. AIFLUXON does not assemble EasyPhy (or any other product) instructions.
+
 ## Internal types (not Python constructors)
 
 These exist in the runtime and may appear in architecture notes, but they are not part of the Python public API:

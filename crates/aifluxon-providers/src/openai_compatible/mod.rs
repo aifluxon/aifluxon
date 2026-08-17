@@ -9,6 +9,7 @@ pub mod tools;
 #[cfg(test)]
 mod turn_engine_tests;
 
+use aifluxon_auth::{CredentialSource, StaticBearerCredential};
 use aifluxon_core::{
     ModelEventSink, ModelProvider, ModelTurn, ModelTurnRequest, ProviderCapabilities,
     ProviderError, ProviderId,
@@ -58,11 +59,11 @@ impl ApiFamily {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct OpenAiCompatibleConfig {
     pub provider_id: ProviderId,
     pub base_url: String,
-    pub api_key: String,
+    pub credential_source: Arc<dyn CredentialSource>,
     pub api_mode: OpenAiApiMode,
     pub allow_cumulative_delta: bool,
     pub family: ApiFamily,
@@ -70,6 +71,28 @@ pub struct OpenAiCompatibleConfig {
     pub send_tool_choice_auto: bool,
     pub parallel_tool_calls: bool,
     pub include_stream_usage: bool,
+    pub chatgpt_account_id: Option<String>,
+}
+
+impl std::fmt::Debug for OpenAiCompatibleConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenAiCompatibleConfig")
+            .field("provider_id", &self.provider_id)
+            .field("base_url", &self.base_url)
+            .field("credential_source", &"CredentialSource([redacted])")
+            .field("api_mode", &self.api_mode)
+            .field("allow_cumulative_delta", &self.allow_cumulative_delta)
+            .field("family", &self.family)
+            .field(
+                "retry_without_tools_on_tool_mode_error",
+                &self.retry_without_tools_on_tool_mode_error,
+            )
+            .field("send_tool_choice_auto", &self.send_tool_choice_auto)
+            .field("parallel_tool_calls", &self.parallel_tool_calls)
+            .field("include_stream_usage", &self.include_stream_usage)
+            .field("chatgpt_account_id", &self.chatgpt_account_id)
+            .finish()
+    }
 }
 
 impl OpenAiCompatibleConfig {
@@ -77,6 +100,22 @@ impl OpenAiCompatibleConfig {
         provider_id: impl Into<ProviderId>,
         base_url: impl Into<String>,
         api_key: impl Into<String>,
+        api_mode: OpenAiApiMode,
+        allow_cumulative_delta: bool,
+    ) -> Self {
+        Self::with_credential(
+            provider_id,
+            base_url,
+            Arc::new(StaticBearerCredential::new(api_key.into())),
+            api_mode,
+            allow_cumulative_delta,
+        )
+    }
+
+    pub fn with_credential(
+        provider_id: impl Into<ProviderId>,
+        base_url: impl Into<String>,
+        credential_source: Arc<dyn CredentialSource>,
         api_mode: OpenAiApiMode,
         allow_cumulative_delta: bool,
     ) -> Self {
@@ -90,9 +129,10 @@ impl OpenAiCompatibleConfig {
             retry_without_tools_on_tool_mode_error: false,
             provider_id,
             base_url: base_url.into(),
-            api_key: api_key.into(),
+            credential_source,
             api_mode,
             allow_cumulative_delta,
+            chatgpt_account_id: None,
         }
     }
 }
@@ -101,6 +141,7 @@ impl OpenAiCompatibleConfig {
 pub struct OpenAiWireRequest {
     pub url: String,
     pub api_key: String,
+    pub extra_headers: Vec<(String, String)>,
     pub body: serde_json::Value,
 }
 
@@ -159,6 +200,26 @@ async fn collect_openai_stream(
     })
 }
 
+async fn send_openai_reqwest(
+    request: &OpenAiWireRequest,
+) -> Result<reqwest::Response, ProviderError> {
+    let client = crate::common::build_http_client(crate::common::HttpClientTuning::default())
+        .map_err(ProviderError::message)?;
+    let mut builder = client
+        .post(&request.url)
+        .bearer_auth(&request.api_key)
+        .header(reqwest::header::ACCEPT_ENCODING, "identity");
+    for (name, value) in &request.extra_headers {
+        builder = builder.header(name.as_str(), value.as_str());
+    }
+    builder.json(&request.body).send().await.map_err(|error| {
+        ProviderError::message(crate::common::sanitize_provider_error(
+            format!("Provider request could not be sent: {error}"),
+            &[&request.api_key],
+        ))
+    })
+}
+
 #[derive(Default)]
 pub struct ReqwestOpenAiTransport;
 
@@ -175,21 +236,7 @@ impl OpenAiTransport for ReqwestOpenAiTransport {
         &self,
         request: OpenAiWireRequest,
     ) -> Result<(OpenAiStreamHead, OpenAiBodyStream), ProviderError> {
-        let client = crate::common::build_http_client(crate::common::HttpClientTuning::default())
-            .map_err(ProviderError::message)?;
-        let response = client
-            .post(&request.url)
-            .bearer_auth(&request.api_key)
-            .header(reqwest::header::ACCEPT_ENCODING, "identity")
-            .json(&request.body)
-            .send()
-            .await
-            .map_err(|error| {
-                ProviderError::message(crate::common::sanitize_provider_error(
-                    format!("Provider request could not be sent: {error}"),
-                    &[&request.api_key],
-                ))
-            })?;
+        let response = send_openai_reqwest(&request).await?;
         let head = OpenAiStreamHead {
             status: response.status().as_u16(),
             content_type: response
@@ -262,6 +309,72 @@ impl OpenAiCompatibleProvider {
         ))
     }
 
+    async fn resolve_bearer(&self, force: bool) -> Result<String, ProviderError> {
+        let credential = if force {
+            self.config.credential_source.force_refresh().await
+        } else {
+            self.config.credential_source.bearer().await
+        };
+        credential
+            .map(|bearer| bearer.token().to_string())
+            .map_err(|error| ProviderError::message(error.to_string()))
+    }
+
+    fn wire_request(
+        &self,
+        mode: OpenAiApiMode,
+        body: serde_json::Value,
+        token: &str,
+        session_key: &str,
+        turn_state: Option<&str>,
+    ) -> Result<OpenAiWireRequest, ProviderError> {
+        Ok(OpenAiWireRequest {
+            url: self.endpoint_for(mode)?,
+            api_key: token.to_string(),
+            extra_headers: crate::codex::oauth_request_headers(
+                self.config.chatgpt_account_id.as_deref(),
+                session_key,
+                turn_state,
+            ),
+            body,
+        })
+    }
+
+    pub async fn send_http(
+        &self,
+        body: serde_json::Value,
+        session_key: Option<&str>,
+        turn_state: Option<&str>,
+    ) -> Result<reqwest::Response, ProviderError> {
+        let mode = decorate::effective_api_mode(
+            &self.config,
+            body.get("model")
+                .and_then(|value| value.as_str())
+                .unwrap_or(""),
+        );
+        let mut token = self.resolve_bearer(false).await?;
+        let mut retried = false;
+        loop {
+            let request = self.wire_request(
+                mode,
+                body.clone(),
+                &token,
+                session_key.unwrap_or(""),
+                turn_state,
+            )?;
+            let response = send_openai_reqwest(&request).await?;
+            if response.status().as_u16() == 401
+                && !retried
+                && self.config.credential_source.supports_refresh()
+            {
+                token = self.resolve_bearer(true).await?;
+                retried = true;
+                continue;
+            }
+            return Ok(response);
+        }
+    }
+
     fn wrap_family_sink(
         &self,
         sink: Arc<dyn ModelEventSink>,
@@ -284,15 +397,14 @@ impl OpenAiCompatibleProvider {
         &self,
         mode: OpenAiApiMode,
         body: serde_json::Value,
+        token: &str,
+        session_key: &str,
+        turn_state: Option<&str>,
         sink: Arc<dyn ModelEventSink>,
     ) -> Result<(u16, String, Option<ModelTurn>), ProviderError> {
         let (head, mut chunks) = self
             .transport
-            .stream(OpenAiWireRequest {
-                url: self.endpoint_for(mode)?,
-                api_key: self.config.api_key.clone(),
-                body,
-            })
+            .stream(self.wire_request(mode, body, token, session_key, turn_state)?)
             .await?;
         if !(200..300).contains(&head.status) {
             let mut raw = Vec::new();
@@ -324,6 +436,40 @@ impl OpenAiCompatibleProvider {
         }
         Ok((head.status, String::new(), Some(turn)))
     }
+
+    async fn stream_turn_with_auth(
+        &self,
+        mode: OpenAiApiMode,
+        body: serde_json::Value,
+        request: &ModelTurnRequest,
+        sink: Arc<dyn ModelEventSink>,
+    ) -> Result<(u16, String, Option<ModelTurn>, String), ProviderError> {
+        let turn_state = request
+            .opaque_state
+            .as_ref()
+            .and_then(|value| value.get("x-codex-turn-state"))
+            .and_then(|value| value.as_str());
+        let mut token = self.resolve_bearer(false).await?;
+        let mut retried = false;
+        loop {
+            let streamed = self
+                .stream_turn(
+                    mode,
+                    body.clone(),
+                    &token,
+                    request.session_key.as_str(),
+                    turn_state,
+                    sink.clone(),
+                )
+                .await?;
+            if streamed.0 == 401 && !retried && self.config.credential_source.supports_refresh() {
+                token = self.resolve_bearer(true).await?;
+                retried = true;
+                continue;
+            }
+            return Ok((streamed.0, streamed.1, streamed.2, token));
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -347,7 +493,9 @@ impl ModelProvider for OpenAiCompatibleProvider {
             OpenAiApiMode::Responses => build_responses_body(&request),
         };
         decorate::decorate_turn_body(&mut body, &self.config, mode, &request);
-        let mut streamed = self.stream_turn(mode, body, sink.clone()).await?;
+        let mut streamed = self
+            .stream_turn_with_auth(mode, body, &request, sink.clone())
+            .await?;
         if self.config.retry_without_tools_on_tool_mode_error
             && !request.tools.is_empty()
             && crate::deepseek::tool_mode_error_status(streamed.0)
@@ -367,14 +515,16 @@ impl ModelProvider for OpenAiCompatibleProvider {
                 OpenAiApiMode::Responses => build_responses_body(&request),
             };
             decorate::decorate_turn_body(&mut fallback, &self.config, mode, &request);
-            streamed = self.stream_turn(mode, fallback, sink).await?;
+            streamed = self
+                .stream_turn_with_auth(mode, fallback, &request, sink)
+                .await?;
         }
-        let (status, preview, turn) = streamed;
+        let (status, preview, turn, token) = streamed;
         if !(200..300).contains(&status) {
             return Err(ProviderError::message(
                 crate::common::sanitize_provider_error(
                     format!("Provider returned HTTP {status}: {preview}"),
-                    &[&self.config.api_key],
+                    &[&token],
                 ),
             ));
         }
@@ -633,5 +783,298 @@ mod tests {
             *sink.0.lock().unwrap(),
             vec!["reason:plan".to_string(), "text:answer".to_string()]
         );
+    }
+
+    struct SequenceTransport {
+        responses: Mutex<Vec<OpenAiWireResponse>>,
+        requests: Mutex<Vec<OpenAiWireRequest>>,
+    }
+
+    #[async_trait::async_trait]
+    impl OpenAiTransport for SequenceTransport {
+        async fn execute(
+            &self,
+            request: OpenAiWireRequest,
+        ) -> Result<OpenAiWireResponse, ProviderError> {
+            self.requests.lock().unwrap().push(request);
+            let mut responses = self.responses.lock().unwrap();
+            if responses.is_empty() {
+                return Err(ProviderError::message("no remaining responses"));
+            }
+            Ok(responses.remove(0))
+        }
+    }
+
+    struct RotatingCredential {
+        tokens: Mutex<Vec<String>>,
+        refresh_count: std::sync::atomic::AtomicUsize,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl aifluxon_auth::CredentialSource for RotatingCredential {
+        async fn bearer(
+            &self,
+        ) -> Result<aifluxon_auth::BearerCredential, aifluxon_auth::AuthError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let tokens = self.tokens.lock().unwrap();
+            Ok(aifluxon_auth::BearerCredential::new(tokens[0].clone()))
+        }
+
+        async fn force_refresh(
+            &self,
+        ) -> Result<aifluxon_auth::BearerCredential, aifluxon_auth::AuthError> {
+            self.refresh_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut tokens = self.tokens.lock().unwrap();
+            if tokens.len() > 1 {
+                tokens.remove(0);
+            }
+            Ok(aifluxon_auth::BearerCredential::new(tokens[0].clone()))
+        }
+
+        fn supports_refresh(&self) -> bool {
+            true
+        }
+    }
+
+    fn success_chat() -> OpenAiWireResponse {
+        OpenAiWireResponse {
+            status: 200,
+            content_type: Some("application/json".to_string()),
+            chunks: vec![br#"{"choices":[{"message":{"content":"done"},"finish_reason":"stop"}],"usage":{"total_tokens":2}}"#.to_vec()],
+        }
+    }
+
+    fn success_responses() -> OpenAiWireResponse {
+        OpenAiWireResponse {
+            status: 200,
+            content_type: Some("text/event-stream".to_string()),
+            chunks: vec![concat!(
+                r#"data: {"type":"response.output_text.delta","sequence_number":1,"delta":"done"}"#,
+                "\n\n",
+                r#"data: {"type":"response.completed","sequence_number":2,"response":{"end_turn":true}}"#,
+                "\n\n"
+            )
+            .as_bytes()
+            .to_vec()],
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_uses_dynamic_bearer_token() {
+        let credential = Arc::new(RotatingCredential {
+            tokens: Mutex::new(vec!["token-a".to_string()]),
+            refresh_count: std::sync::atomic::AtomicUsize::new(0),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let transport = Arc::new(SequenceTransport {
+            responses: Mutex::new(vec![success_chat()]),
+            requests: Mutex::new(Vec::new()),
+        });
+        let provider = OpenAiCompatibleProvider::with_transport(
+            OpenAiCompatibleConfig::with_credential(
+                "openai",
+                "https://provider.invalid/v1",
+                credential,
+                OpenAiApiMode::ChatCompletions,
+                false,
+            ),
+            transport.clone(),
+        );
+        provider
+            .next_turn(request(), Arc::new(aifluxon_core::NoopModelEventSink))
+            .await
+            .unwrap();
+        assert_eq!(transport.requests.lock().unwrap()[0].api_key, "token-a");
+    }
+
+    #[tokio::test]
+    async fn provider_does_not_cache_oauth_token_forever() {
+        let credential = Arc::new(RotatingCredential {
+            tokens: Mutex::new(vec!["token-a".to_string(), "token-b".to_string()]),
+            refresh_count: std::sync::atomic::AtomicUsize::new(0),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let transport = Arc::new(SequenceTransport {
+            responses: Mutex::new(vec![success_chat(), success_chat()]),
+            requests: Mutex::new(Vec::new()),
+        });
+        let provider = OpenAiCompatibleProvider::with_transport(
+            OpenAiCompatibleConfig::with_credential(
+                "openai",
+                "https://provider.invalid/v1",
+                credential.clone(),
+                OpenAiApiMode::ChatCompletions,
+                false,
+            ),
+            transport.clone(),
+        );
+        provider
+            .next_turn(request(), Arc::new(aifluxon_core::NoopModelEventSink))
+            .await
+            .unwrap();
+        credential.force_refresh().await.unwrap();
+        provider
+            .next_turn(request(), Arc::new(aifluxon_core::NoopModelEventSink))
+            .await
+            .unwrap();
+        let keys: Vec<String> = transport
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|request| request.api_key.clone())
+            .collect();
+        assert_eq!(keys, vec!["token-a".to_string(), "token-b".to_string()]);
+        assert_eq!(
+            credential.calls.load(std::sync::atomic::Ordering::SeqCst),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_401_forces_at_most_one_refresh_retry() {
+        let credential = Arc::new(RotatingCredential {
+            tokens: Mutex::new(vec!["token-a".to_string(), "token-b".to_string()]),
+            refresh_count: std::sync::atomic::AtomicUsize::new(0),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let transport = Arc::new(SequenceTransport {
+            responses: Mutex::new(vec![
+                OpenAiWireResponse {
+                    status: 401,
+                    content_type: Some("application/json".to_string()),
+                    chunks: vec![br#"{"error":"unauthorized"}"#.to_vec()],
+                },
+                success_chat(),
+            ]),
+            requests: Mutex::new(Vec::new()),
+        });
+        let provider = OpenAiCompatibleProvider::with_transport(
+            OpenAiCompatibleConfig::with_credential(
+                "openai",
+                "https://provider.invalid/v1",
+                credential.clone(),
+                OpenAiApiMode::ChatCompletions,
+                false,
+            ),
+            transport.clone(),
+        );
+        let turn = provider
+            .next_turn(request(), Arc::new(aifluxon_core::NoopModelEventSink))
+            .await
+            .unwrap();
+        assert_eq!(turn.text, "done");
+        assert_eq!(
+            credential
+                .refresh_count
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        let keys: Vec<String> = transport
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|request| request.api_key.clone())
+            .collect();
+        assert_eq!(keys, vec!["token-a".to_string(), "token-b".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn provider_second_401_surfaces_error() {
+        let credential = Arc::new(RotatingCredential {
+            tokens: Mutex::new(vec!["token-a".to_string(), "token-b".to_string()]),
+            refresh_count: std::sync::atomic::AtomicUsize::new(0),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let unauthorized = OpenAiWireResponse {
+            status: 401,
+            content_type: Some("application/json".to_string()),
+            chunks: vec![br#"{"error":"unauthorized"}"#.to_vec()],
+        };
+        let transport = Arc::new(SequenceTransport {
+            responses: Mutex::new(vec![unauthorized.clone(), unauthorized]),
+            requests: Mutex::new(Vec::new()),
+        });
+        let provider = OpenAiCompatibleProvider::with_transport(
+            OpenAiCompatibleConfig::with_credential(
+                "openai",
+                "https://provider.invalid/v1",
+                credential.clone(),
+                OpenAiApiMode::ChatCompletions,
+                false,
+            ),
+            transport.clone(),
+        );
+        let error = provider
+            .next_turn(request(), Arc::new(aifluxon_core::NoopModelEventSink))
+            .await
+            .unwrap_err();
+        assert!(error.message.contains("401"));
+        assert_eq!(transport.requests.lock().unwrap().len(), 2);
+        assert_eq!(
+            credential
+                .refresh_count
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn static_api_key_path_still_works() {
+        let transport = Arc::new(FakeTransport {
+            response: success_responses(),
+            request: Mutex::new(None),
+        });
+        let provider = OpenAiCompatibleProvider::with_transport(
+            OpenAiCompatibleConfig::new(
+                "codex",
+                "https://api.openai.com/v1",
+                "sk-static",
+                OpenAiApiMode::Responses,
+                false,
+            ),
+            transport.clone(),
+        );
+        provider
+            .next_turn(request(), Arc::new(aifluxon_core::NoopModelEventSink))
+            .await
+            .unwrap();
+        let sent = transport.request.lock().unwrap().clone().unwrap();
+        assert_eq!(sent.api_key, "sk-static");
+        assert!(sent.extra_headers.is_empty());
+        assert_eq!(sent.url, "https://api.openai.com/v1/responses");
+    }
+
+    #[tokio::test]
+    async fn oauth_codex_credential_path_sends_backend_headers() {
+        let transport = Arc::new(FakeTransport {
+            response: success_responses(),
+            request: Mutex::new(None),
+        });
+        let provider = OpenAiCompatibleProvider::with_transport(
+            crate::codex::oauth_config(
+                Arc::new(aifluxon_auth::StaticBearerCredential::new("oauth-token")),
+                "account-123",
+            ),
+            transport.clone(),
+        );
+        provider
+            .next_turn(request(), Arc::new(aifluxon_core::NoopModelEventSink))
+            .await
+            .unwrap();
+        let sent = transport.request.lock().unwrap().clone().unwrap();
+        assert_eq!(sent.api_key, "oauth-token");
+        assert_eq!(sent.url, "https://chatgpt.com/backend-api/codex/responses");
+        assert!(sent
+            .extra_headers
+            .iter()
+            .any(|(name, value)| name == "ChatGPT-Account-ID" && value == "account-123"));
+        assert!(sent
+            .extra_headers
+            .iter()
+            .any(|(name, value)| name == "originator" && value == crate::codex::ORIGINATOR));
     }
 }

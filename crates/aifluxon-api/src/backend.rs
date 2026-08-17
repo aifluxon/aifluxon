@@ -160,12 +160,14 @@ impl Aifluxon {
         let session_key = request.session_key.unwrap_or_else(|| {
             ProviderSessionKey::from_session_id(&session_id.unwrap_or(session_record.id))
         });
-        let mut canonical_messages = if session_id.is_some() {
-            session_record.messages.clone()
-        } else {
-            Vec::new()
-        };
-        canonical_messages.extend(request.messages);
+        let canonical_messages = crate::prompt::merge_session_and_request_messages(
+            if session_id.is_some() {
+                session_record.messages.clone()
+            } else {
+                Vec::new()
+            },
+            request.messages,
+        );
         let opaque_state = match session_id {
             Some(session_id) => self
                 .configuration

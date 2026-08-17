@@ -233,10 +233,41 @@ Runtime 不强制任何产品专属权限模式。不同 Host 可以根据自己
 
 详细说明见 [Tools and policy](docs/python/tools-and-policy.md)。
 
+## Authentication
+
+AIFLUXON 是 Codex OAuth 的唯一权威实现。Host 只选择 secret-store namespace，并负责打开浏览器 / UI。Runtime 看不到 OAuth token。
+
+```rust
+let auth = aifluxon_api::CodexAuth::builder()
+    .secret_store(aifluxon_api::SystemKeyringStore::new("My Product"))
+    .build()?;
+let login = auth.begin_login().await?;
+println!("{}", login.authorization_url());
+let account = login.wait().await?;
+let provider = auth.provider("gpt-5.6-codex", Some(account.id.clone()))?;
+```
+
+Python：
+
+```python
+from aifluxon import Agent, CodexAuth
+
+auth = CodexAuth()
+login = await auth.login()
+print(login.authorization_url)
+account = await login.wait()
+agent = Agent(auth.provider("gpt-5.6-codex", account_id=account.id))
+```
+
+静态 API Key 仍然可用，包括 `Codex(model, api_key=...)`。OAuth 凭证保存在系统 keyring 或显式加密 vault 中，没有明文 JSON fallback。
+
+详见 [Authentication](docs/auth/README.md)。
+
 ## 文档
 
 ### Core
 
+- [Authentication](docs/auth/README.md)
 - [Architecture](docs/architecture.md)
 - [Contributing](CONTRIBUTING.md)
 - [Changelog](CHANGELOG.md)
@@ -251,6 +282,8 @@ Runtime 不强制任何产品专属权限模式。不同 Host 可以根据自己
 - [Events](docs/python/events.md)
 - [Tools and Policy](docs/python/tools-and-policy.md)
 - [Errors](docs/python/errors.md)
+- [Codex OAuth](docs/python/auth.md)
+- [Thinking](docs/python/thinking.md)
 - [Python Architecture](docs/python/architecture.md)
 
 示例位于 [`bindings/python/examples`](bindings/python/examples)。
@@ -262,6 +295,7 @@ crates/
   aifluxon-core/       Domain Contract 与共享类型
   aifluxon-runtime/    Run lifecycle、Events、Tools、Operations
   aifluxon-providers/  Provider Protocol 与 HTTP Transport
+  aifluxon-auth/       Codex OAuth、secret store、CredentialSource
   aifluxon-api/        提供给 Host 的稳定 Facade
 
 bindings/python/       PyO3 package `aifluxon`

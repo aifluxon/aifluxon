@@ -38,5 +38,6 @@ mod crate_boundary {
                 "aifluxon-providers must not depend on {forbidden}"
             );
         }
+        assert!(manifest.contains("aifluxon-auth"));
     }
 }

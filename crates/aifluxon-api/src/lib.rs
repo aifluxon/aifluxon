@@ -1,6 +1,7 @@
 //! Stable, transport-neutral application facade for AIFLUXON.
 
 mod agent;
+mod auth;
 mod backend;
 mod builder;
 mod controlled;
@@ -16,11 +17,19 @@ mod workspace;
 mod engine_tests;
 
 pub use agent::{ProviderRegistry, ProviderRegistryError, ToolPolicy};
+pub use auth::{
+    unlock_encrypted_store, AifluxonAuthError, AifluxonAuthErrorKind, CodexAccount, CodexAuth,
+    CodexAuthBuilder, CodexAuthState, CodexAuthStatus, CodexLoginAttempt, CodexProviderHandle,
+    EncryptedFileSecretStore, MemorySecretStore, SecretStore, SecretString, SystemKeyringStore,
+    CODEX_OAUTH_BASE_URL, DEFAULT_SERVICE_NAME,
+};
 pub use backend::{Aifluxon, AifluxonError, AifluxonErrorKind};
 pub use builder::AifluxonBuilder;
 pub use controlled::ControlledProvider;
 pub use events_json::{envelope_to_json, event_to_json, operation_snapshot_to_json};
-pub use prompt::user_prompt_request;
+pub use prompt::{
+    user_prompt_request, user_prompt_request_with_features, user_prompt_request_with_system,
+};
 pub use providers::{
     register_provider_from_json, ProviderBinding, CODEX_DEFAULT_BASE_URL,
     DEEPSEEK_DEFAULT_BASE_URL, GEMINI_DEFAULT_BASE_URL, KIMI_DEFAULT_BASE_URL,
@@ -66,6 +75,7 @@ mod crate_boundary {
             "aifluxon-core",
             "aifluxon-runtime",
             "aifluxon-providers",
+            "aifluxon-auth",
             "serde_json.workspace",
             "thiserror.workspace",
             "tokio.workspace",

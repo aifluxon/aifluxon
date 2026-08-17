@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Codex OAuth is owned by `aifluxon-auth` and exposed through `aifluxon-api::CodexAuth` and the Python `CodexAuth` SDK.
+- Python `Agent` accepts `reasoning_effort`, `thinking`, and `thinking_budget` and forwards them as `ProviderFeatureRequest`.
+- Python `Agent` accepts `system_prompt` and prepends it as a canonical system message. Session turns replace the leading system message instead of stacking copies.
+- OpenAI-compatible providers resolve a `CredentialSource` on every remote turn. OAuth 401 retries at most once.
+- System keyring, encrypted vault, and memory secret stores. No plaintext JSON fallback.
+
 ## 0.1.0
 
 Initial experimental release.

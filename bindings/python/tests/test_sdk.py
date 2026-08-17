@@ -11,6 +11,7 @@ from aifluxon import (
     Agent,
     CancelledError,
     ControlledProvider,
+    InvalidConfigurationError,
     JsonFileSessionStore,
     OperationRequested,
     RequireApprovalPolicy,
@@ -62,6 +63,67 @@ async def test_session_creates_distinct_runs_and_restores(tmp_path: Path) -> Non
     blob = "\n".join(path.read_text(encoding="utf-8") for path in files).lower()
     for forbidden in ("api_key", "sk-", "oauth", "cookie"):
         assert forbidden not in blob
+
+
+@pytest.mark.asyncio
+async def test_agent_thinking_defaults_and_per_run_override() -> None:
+    agent = Agent(
+        provider=ControlledProvider(["default-run", "override-run"]),
+        reasoning_effort="high",
+        thinking=True,
+        thinking_budget=2048,
+    )
+    assert agent.reasoning_effort == "high"
+    assert agent.thinking == "enabled"
+    assert agent.thinking_budget == "2048"
+    assert agent.thinking_settings.to_payload() == {
+        "reasoning_effort": "high",
+        "thinking_mode": "enabled",
+        "thinking_budget": "2048",
+    }
+    first = await agent.run("one")
+    second = await agent.run("two", reasoning_effort="low", thinking=False)
+    assert first.text == "default-run"
+    assert second.text == "override-run"
+    assert agent.reasoning_effort == "high"
+
+
+@pytest.mark.asyncio
+async def test_agent_system_prompt_defaults_and_per_run_override(tmp_path: Path) -> None:
+    store = JsonFileSessionStore(str(tmp_path / "data"))
+    agent = Agent(
+        provider=ControlledProvider(["one", "two", "three"]),
+        store=store,
+        system_prompt="You are a laboratory reviewer.",
+    )
+    assert agent.system_prompt == "You are a laboratory reviewer."
+    session = await agent.open_or_create_session("lab")
+    first = await session.run("first")
+    second = await session.run("second")
+    assert first.text == "one"
+    assert second.text == "two"
+    blob = "\n".join(
+        path.read_text(encoding="utf-8") for path in (tmp_path / "data").rglob("*.json")
+    )
+    assert blob.count("You are a laboratory reviewer.") == 1
+    third = await session.run("third", system_prompt="You are a translator.")
+    assert third.text == "three"
+    blob = "\n".join(
+        path.read_text(encoding="utf-8") for path in (tmp_path / "data").rglob("*.json")
+    )
+    assert blob.count("You are a laboratory reviewer.") == 0
+    assert blob.count("You are a translator.") == 1
+    with pytest.raises(InvalidConfigurationError):
+        Agent(provider=ControlledProvider(["x"]), system_prompt=123)
+
+
+def test_thinking_settings_reject_invalid_values() -> None:
+    with pytest.raises(InvalidConfigurationError):
+        Agent(provider=ControlledProvider(["x"]), reasoning_effort="ultra")
+    with pytest.raises(InvalidConfigurationError):
+        Agent(provider=ControlledProvider(["x"]), thinking="maybe")
+    with pytest.raises(InvalidConfigurationError):
+        Agent(provider=ControlledProvider(["x"]), thinking_budget=0)
 
 
 @pytest.mark.asyncio
