@@ -44,7 +44,7 @@ pub(crate) fn message_to_wire(message: &Message) -> Value {
                 .iter()
                 .map(|call| {
                     json!({
-                        "id": call.id.hyphenated(),
+                        "id": call.wire_call_id(),
                         "type": "function",
                         "function": {
                             "name": call.name,
@@ -55,10 +55,24 @@ pub(crate) fn message_to_wire(message: &Message) -> Value {
                 .collect(),
         );
     }
-    if let Some(tool_call_id) = message.tool_call_id {
-        wire["tool_call_id"] = json!(tool_call_id.hyphenated());
+    if message.role == MessageRole::Tool {
+        if let Some(tool_call_id) = tool_message_call_id(message) {
+            wire["tool_call_id"] = json!(tool_call_id);
+        }
     }
     wire
+}
+
+fn tool_message_call_id(message: &Message) -> Option<String> {
+    message
+        .provider_state
+        .as_ref()
+        .and_then(|state| state.get("call_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .or_else(|| message.tool_call_id.map(|id| id.hyphenated()))
 }
 
 fn content_to_wire(message: &Message) -> Value {

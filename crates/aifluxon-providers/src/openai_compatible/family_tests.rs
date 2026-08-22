@@ -316,10 +316,7 @@ fn deepseek_replays_reasoning_content_on_assistant_history() {
         "I should inspect the file first."
     );
     assert_eq!(body["messages"][0]["role"], "assistant");
-    assert_eq!(
-        body["messages"][0]["tool_calls"][0]["id"],
-        call_id.hyphenated()
-    );
+    assert_eq!(body["messages"][0]["tool_calls"][0]["id"], "call-1");
 }
 
 #[test]
@@ -605,6 +602,36 @@ fn responses_input_replays_provider_state_items() {
     let body = build_responses_body(&request);
     assert_eq!(body["input"][1]["type"], "reasoning");
     assert_eq!(body["input"][1]["id"], "rs-1");
+}
+
+#[test]
+fn chat_input_preserves_provider_call_id_for_matching_tool_results() {
+    let call_id = aifluxon_core::ToolInvocationId::from_stable_key("call_upstream_1");
+    let mut request = request_with("custom-model", Default::default());
+    request.messages.push(Message {
+        role: MessageRole::Assistant,
+        content: Vec::new(),
+        tool_calls: vec![aifluxon_core::ToolCall {
+            id: call_id,
+            name: "read_file".to_string(),
+            arguments: json!({ "path": "src/lib.rs" }),
+            provider_call_id: Some("call_upstream_1".to_string()),
+        }],
+        tool_call_id: None,
+        provider_state: None,
+    });
+    request.messages.push(Message {
+        role: MessageRole::Tool,
+        content: vec![ContentPart::Text("ok".to_string())],
+        tool_calls: Vec::new(),
+        tool_call_id: Some(call_id),
+        provider_state: Some(json!({ "call_id": "call_upstream_1" })),
+    });
+
+    let body = build_chat_completions_body(&request);
+    let messages = body["messages"].as_array().expect("chat messages");
+    assert_eq!(messages[1]["tool_calls"][0]["id"], "call_upstream_1");
+    assert_eq!(messages[2]["tool_call_id"], "call_upstream_1");
 }
 
 #[test]
