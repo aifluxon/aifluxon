@@ -73,13 +73,28 @@ fn content_to_wire(message: &Message) -> Value {
             .iter()
             .map(|part| match part {
                 ContentPart::Text(text) => json!({ "type": "text", "text": text }),
-                ContentPart::Image(image) => json!({
-                    "type": "image_url",
-                    "image_url": { "url": image.artifact.as_str() },
-                }),
+                ContentPart::Image(image) => image_to_chat_wire(image),
             })
             .collect(),
     )
+}
+
+pub(crate) fn image_is_file_id(reference: &str) -> bool {
+    reference.trim().starts_with("file-")
+}
+
+pub(crate) fn image_to_chat_wire(image: &aifluxon_core::ImageContent) -> Value {
+    if image_is_file_id(image.artifact.as_str()) {
+        json!({
+            "type": "file",
+            "file_id": image.artifact.as_str(),
+        })
+    } else {
+        json!({
+            "type": "image_url",
+            "image_url": { "url": image.artifact.as_str() },
+        })
+    }
 }
 
 pub struct ChatCompletionsTurnAssembler {

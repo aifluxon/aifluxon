@@ -43,6 +43,24 @@ Codex OAuth (PKCE, callback, exchange, refresh, persistence) lives in `aifluxon-
 
 ChatGPT Web and DeepSeek Web are not public constructors in the Python SDK.
 
+## Image inputs
+
+The canonical `ContentPart::Image(ImageContent)` boundary carries provider-ready image
+references. A host must resolve a local file before starting a run and pass one of:
+
+- a supported base64 data URL;
+- a public HTTP(S) URL; or
+- a provider Files API id such as `file-api-...`.
+
+OpenAI-compatible Chat Completions and Responses requests serialize these references into
+their protocol-specific content blocks. Responses tool results retain image content instead
+of reducing the output to text.
+
+For DeepSeek, image input is enabled only for `deepseek-v4-flash-vision-exp`. The provider
+validates the documented message-role, MIME, image-count, URL-length, inline-size, and
+request-body limits before network I/O. DeepSeek Web remains a separate text-only private
+integration.
+
 ## Identities
 
 `SessionId`, `RunId`, and `ProviderSessionKey` are distinct. A session can produce many runs. Provider continuation state is scoped to `(SessionId, ProviderId)`.

@@ -19,6 +19,18 @@ pub struct ImageContent {
     pub mime_type: String,
 }
 
+impl ImageContent {
+    /// Creates provider-ready image content from a data URL, external URL, or
+    /// provider file id. Hosts retain ownership of local files and must resolve
+    /// them before they cross the provider boundary.
+    pub fn new(reference: impl Into<ArtifactRef>, mime_type: impl Into<String>) -> Self {
+        Self {
+            artifact: reference.into(),
+            mime_type: mime_type.into(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ToolCall {
     #[serde(with = "tool_invocation_id_serde")]
@@ -119,10 +131,7 @@ mod tests {
             role: MessageRole::Assistant,
             content: vec![
                 ContentPart::Text("inspect the artifact".to_string()),
-                ContentPart::Image(ImageContent {
-                    artifact: ArtifactRef::new("artifact://run/output-1"),
-                    mime_type: "image/png".to_string(),
-                }),
+                ContentPart::Image(ImageContent::new("artifact://run/output-1", "image/png")),
             ],
             tool_calls: vec![ToolCall {
                 id: tool_call_id,

@@ -13,6 +13,10 @@ fn is_v4_pro(model: &str) -> bool {
     model_is_family(&normalized_model(model), "deepseek-v4-pro")
 }
 
+pub fn supports_image_input(model: &str) -> bool {
+    model_is_family(&normalized_model(model), "deepseek-v4-flash-vision-exp")
+}
+
 pub fn capabilities(model: &str) -> ModelApiCapabilities {
     if is_v4_flash(model) || is_v4_pro(model) {
         ModelApiCapabilities::CHAT_AND_RESPONSES
@@ -60,11 +64,16 @@ pub fn tool_mode_error_status(status: u16) -> bool {
 mod tests {
     use super::*;
     #[test]
-    fn v4_flash_and_pro_support_responses_but_only_flash_keeps_low_effort() {
+    fn v4_models_and_vision_capabilities_stay_model_specific() {
         assert!(capabilities("deepseek-v4-flash").supports_responses);
         assert!(capabilities("deepseek-v4-pro").supports_responses);
+        assert!(capabilities("deepseek-v4-flash-vision-exp").supports_responses);
         assert!(capabilities("DeepSeek-V4-Pro").supports_responses);
         assert!(!capabilities("deepseek-chat").supports_responses);
+        assert!(supports_image_input("deepseek-v4-flash-vision-exp"));
+        assert!(supports_image_input("DeepSeek-V4-Flash-Vision-Exp-202608"));
+        assert!(!supports_image_input("deepseek-v4-flash"));
+        assert!(!supports_image_input("deepseek-v4-pro"));
         assert!(supports_low_reasoning_effort("deepseek-v4-flash"));
         assert!(!supports_low_reasoning_effort("deepseek-v4-pro"));
         assert_eq!(normalize_reasoning_effort("deepseek-v4-pro", "low"), "high");

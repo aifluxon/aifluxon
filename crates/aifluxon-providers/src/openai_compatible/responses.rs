@@ -1,4 +1,4 @@
-use super::chat_completions::{finished_tool_calls, usage_value};
+use super::chat_completions::{finished_tool_calls, image_is_file_id, usage_value};
 use super::tools::descriptor_to_openai_tool;
 use crate::common::{reconcile_terminal_text, TextDeltaReconciler, ToolCallAssembler};
 use aifluxon_core::{
@@ -111,7 +111,7 @@ fn function_call_output_item(
     json!({
         "type": "function_call_output",
         "call_id": resolve_function_call_id(message, call_ids),
-        "output": tool_output_text(message),
+        "output": tool_output_content(message),
     })
 }
 
@@ -187,8 +187,12 @@ fn filter_persisted_turn_items(items: &[Value]) -> Vec<Value> {
                     Some(item.clone())
                 }
                 Some(
-                    "reasoning" | "function_call" | "function_call_output" | "web_search_call"
-                    | "custom_tool_call" | "custom_tool_call_output",
+                    "reasoning"
+                    | "function_call"
+                    | "function_call_output"
+                    | "web_search_call"
+                    | "custom_tool_call"
+                    | "custom_tool_call_output",
                 ) => Some(item.clone()),
                 _ => None,
             },
@@ -289,13 +293,24 @@ fn responses_content(message: &Message) -> Value {
             .iter()
             .map(|part| match part {
                 ContentPart::Text(text) => json!({ "type": text_type, "text": text }),
-                ContentPart::Image(image) => json!({
-                    "type": "input_image",
-                    "image_url": image.artifact.as_str(),
-                }),
+                ContentPart::Image(image) => image_to_responses_wire(image),
             })
             .collect(),
     )
+}
+
+fn image_to_responses_wire(image: &aifluxon_core::ImageContent) -> Value {
+    if image_is_file_id(image.artifact.as_str()) {
+        json!({
+            "type": "input_image",
+            "file_id": image.artifact.as_str(),
+        })
+    } else {
+        json!({
+            "type": "input_image",
+            "image_url": image.artifact.as_str(),
+        })
+    }
 }
 
 fn responses_content_is_present(content: &Value) -> bool {
@@ -320,6 +335,27 @@ fn tool_output_text(message: &Message) -> String {
     } else {
         texts.join("")
     }
+}
+
+fn tool_output_content(message: &Message) -> Value {
+    if !message
+        .content
+        .iter()
+        .any(|part| matches!(part, ContentPart::Image(_)))
+    {
+        return json!(tool_output_text(message));
+    }
+
+    Value::Array(
+        message
+            .content
+            .iter()
+            .map(|part| match part {
+                ContentPart::Text(text) => json!({ "type": "input_text", "text": text }),
+                ContentPart::Image(image) => image_to_responses_wire(image),
+            })
+            .collect(),
+    )
 }
 
 fn value_to_tool_output(value: &Value) -> String {

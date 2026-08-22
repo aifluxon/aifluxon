@@ -152,6 +152,6 @@ DeepSeek("deepseek-v4-pro", api_key="...", api_mode="responses")
 DeepSeek("deepseek-v4-flash", api_key="...", api_mode="chat_completions")
 ```
 
-If the model does not support the requested mode, AIFLUXON falls back to the supported protocol. V4 Flash and V4 Pro both support Responses.
+If the model does not support the requested mode, AIFLUXON falls back to the supported protocol. V4 Flash, V4 Pro, and V4 Flash Vision Exp support Responses.
 
 Runnable copies of these examples live in `bindings/python/examples/`.

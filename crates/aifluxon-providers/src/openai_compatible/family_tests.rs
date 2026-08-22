@@ -1,11 +1,11 @@
 use super::{
-    build_chat_completions_body, build_responses_body, decorate, ApiFamily, OpenAiApiMode,
-    OpenAiCompatibleConfig, OpenAiCompatibleProvider, OpenAiTransport, OpenAiWireRequest,
-    OpenAiWireResponse,
+    build_chat_completions_body, build_responses_body, decorate, validate_deepseek_image_request,
+    ApiFamily, OpenAiApiMode, OpenAiCompatibleConfig, OpenAiCompatibleProvider, OpenAiTransport,
+    OpenAiWireRequest, OpenAiWireResponse,
 };
 use aifluxon_core::{
-    ContentPart, ContinuationReason, Message, MessageRole, ModelProvider, ModelTurnRequest,
-    NoopModelEventSink, ProviderId, ProviderSessionKey, ProviderTerminal, RunId,
+    ContentPart, ContinuationReason, ImageContent, Message, MessageRole, ModelProvider,
+    ModelTurnRequest, NoopModelEventSink, ProviderId, ProviderSessionKey, ProviderTerminal, RunId,
 };
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
@@ -89,6 +89,114 @@ fn decorated_responses(family: ApiFamily, request: &ModelTurnRequest) -> Value {
     let mut body = build_responses_body(request);
     decorate::decorate_turn_body(&mut body, &config, OpenAiApiMode::Responses, request);
     body
+}
+
+fn add_image(request: &mut ModelTurnRequest, role: MessageRole, reference: &str, mime: &str) {
+    request.messages.push(Message {
+        role,
+        content: vec![
+            ContentPart::Text("inspect".to_string()),
+            ContentPart::Image(ImageContent::new(reference, mime)),
+        ],
+        tool_calls: Vec::new(),
+        tool_call_id: None,
+        provider_state: (role == MessageRole::Tool).then(|| json!({ "call_id": "call-image" })),
+    });
+}
+
+#[test]
+fn deepseek_vision_serializes_chat_responses_and_tool_output_images() {
+    let mut chat = request_with("deepseek-v4-flash-vision-exp", Default::default());
+    add_image(
+        &mut chat,
+        MessageRole::User,
+        "file-api-image-1",
+        "image/png",
+    );
+    let chat_body = build_chat_completions_body(&chat);
+    assert_eq!(chat_body["messages"][1]["content"][1]["type"], "file");
+    assert_eq!(
+        chat_body["messages"][1]["content"][1]["file_id"],
+        "file-api-image-1"
+    );
+
+    let mut responses = request_with("deepseek-v4-flash-vision-exp", Default::default());
+    add_image(
+        &mut responses,
+        MessageRole::User,
+        "data:image/gif;base64,R0lGODlh",
+        "image/gif",
+    );
+    add_image(
+        &mut responses,
+        MessageRole::Tool,
+        "https://example.com/tool-output.webp",
+        "image/webp",
+    );
+    let responses_body = build_responses_body(&responses);
+    assert_eq!(
+        responses_body["input"][1]["content"][1]["type"],
+        "input_image"
+    );
+    assert_eq!(
+        responses_body["input"][1]["content"][1]["image_url"],
+        "data:image/gif;base64,R0lGODlh"
+    );
+    assert_eq!(responses_body["input"][2]["type"], "function_call_output");
+    assert_eq!(
+        responses_body["input"][2]["output"][1]["type"],
+        "input_image"
+    );
+    assert_eq!(
+        responses_body["input"][2]["output"][1]["image_url"],
+        "https://example.com/tool-output.webp"
+    );
+}
+
+#[test]
+fn deepseek_vision_validation_rejects_wrong_models_roles_and_sources() {
+    let config = config(ApiFamily::DeepSeek, OpenAiApiMode::Responses);
+    let mut wrong_model = request_with("deepseek-v4-flash", Default::default());
+    add_image(
+        &mut wrong_model,
+        MessageRole::User,
+        "data:image/png;base64,iVBORw0KGgo=",
+        "image/png",
+    );
+    assert!(
+        validate_deepseek_image_request(&config, OpenAiApiMode::Responses, &wrong_model)
+            .unwrap_err()
+            .message
+            .contains("does not support image input")
+    );
+
+    let mut wrong_role = request_with("deepseek-v4-flash-vision-exp", Default::default());
+    add_image(
+        &mut wrong_role,
+        MessageRole::Assistant,
+        "https://example.com/image.png",
+        "image/png",
+    );
+    assert!(
+        validate_deepseek_image_request(&config, OpenAiApiMode::Responses, &wrong_role)
+            .unwrap_err()
+            .message
+            .contains("only in user messages")
+    );
+
+    let mut local_path = request_with("deepseek-v4-flash-vision-exp", Default::default());
+    add_image(
+        &mut local_path,
+        MessageRole::User,
+        "C:\\images\\plot.png",
+        "image/png",
+    );
+    assert!(
+        validate_deepseek_image_request(&config, OpenAiApiMode::Responses, &local_path)
+            .unwrap_err()
+            .message
+            .contains("must be supported base64 data URLs")
+    );
 }
 
 #[test]

@@ -202,7 +202,7 @@ Default base URL: `https://api.openai.com/v1`. `api_mode` is `"chat_completions"
 
 ### `DeepSeek(model, *, api_key, base_url=None, api_mode=None)`
 
-Default base URL: `https://api.deepseek.com`. Default API mode: `chat_completions`. `deepseek-v4-flash` and `deepseek-v4-pro` also accept `api_mode="responses"`.
+Default base URL: `https://api.deepseek.com`. Default API mode: `chat_completions`. `deepseek-v4-flash`, `deepseek-v4-pro`, and `deepseek-v4-flash-vision-exp` also accept `api_mode="responses"`. The current Python prompt surface is text-only; Rust hosts can pass canonical image content to the vision model.
 
 ### `Qwen(model, *, api_key, base_url=None, api_mode=None)`
 

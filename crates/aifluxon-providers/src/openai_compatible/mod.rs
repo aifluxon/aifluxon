@@ -11,10 +11,11 @@ mod turn_engine_tests;
 
 use aifluxon_auth::{CredentialSource, StaticBearerCredential};
 use aifluxon_core::{
-    ModelEventSink, ModelProvider, ModelTurn, ModelTurnRequest, ProviderCapabilities,
-    ProviderError, ProviderId,
+    ContentPart, MessageRole, ModelEventSink, ModelProvider, ModelTurn, ModelTurnRequest,
+    ProviderCapabilities, ProviderError, ProviderId,
 };
 use futures_util::{Stream, StreamExt};
+use serde_json::Value;
 use std::pin::Pin;
 use std::sync::Arc;
 use streaming::LiveStreamDecoder;
@@ -488,11 +489,13 @@ impl ModelProvider for OpenAiCompatibleProvider {
         sink: Arc<dyn ModelEventSink>,
     ) -> Result<ModelTurn, ProviderError> {
         let mode = decorate::effective_api_mode(&self.config, &request.model);
+        validate_deepseek_image_request(&self.config, mode, &request)?;
         let mut body = match mode {
             OpenAiApiMode::ChatCompletions => build_chat_completions_body(&request),
             OpenAiApiMode::Responses => build_responses_body(&request),
         };
         decorate::decorate_turn_body(&mut body, &self.config, mode, &request);
+        validate_deepseek_request_body_size(&self.config, &request, &body)?;
         let mut streamed = self
             .stream_turn_with_auth(mode, body, &request, sink.clone())
             .await?;
@@ -515,6 +518,7 @@ impl ModelProvider for OpenAiCompatibleProvider {
                 OpenAiApiMode::Responses => build_responses_body(&request),
             };
             decorate::decorate_turn_body(&mut fallback, &self.config, mode, &request);
+            validate_deepseek_request_body_size(&self.config, &request, &fallback)?;
             streamed = self
                 .stream_turn_with_auth(mode, fallback, &request, sink)
                 .await?;
@@ -538,6 +542,134 @@ impl ModelProvider for OpenAiCompatibleProvider {
         );
         Ok(turn)
     }
+}
+
+const DEEPSEEK_MAX_IMAGE_COUNT: usize = 600;
+const DEEPSEEK_MAX_EXTERNAL_URL_CHARS: usize = 8192;
+const DEEPSEEK_MAX_INLINE_IMAGE_BYTES: usize = 32 * 1024 * 1024;
+const DEEPSEEK_MAX_REQUEST_BYTES: usize = 48 * 1024 * 1024;
+
+fn validate_deepseek_image_request(
+    config: &OpenAiCompatibleConfig,
+    mode: OpenAiApiMode,
+    request: &ModelTurnRequest,
+) -> Result<(), ProviderError> {
+    if config.family != ApiFamily::DeepSeek {
+        return Ok(());
+    }
+    let images = request
+        .messages
+        .iter()
+        .flat_map(|message| {
+            message.content.iter().filter_map(move |part| match part {
+                ContentPart::Image(image) => Some((message.role, image)),
+                ContentPart::Text(_) => None,
+            })
+        })
+        .collect::<Vec<_>>();
+    if images.is_empty() {
+        return Ok(());
+    }
+    if !crate::deepseek::supports_image_input(&request.model) {
+        return Err(ProviderError::message(format!(
+            "DeepSeek model `{}` does not support image input; use deepseek-v4-flash-vision-exp.",
+            request.model
+        )));
+    }
+    if images.len() > DEEPSEEK_MAX_IMAGE_COUNT {
+        return Err(ProviderError::message(format!(
+            "DeepSeek vision accepts at most {DEEPSEEK_MAX_IMAGE_COUNT} images per request."
+        )));
+    }
+
+    for (role, image) in images {
+        let role_allowed = role == MessageRole::User
+            || (mode == OpenAiApiMode::Responses && role == MessageRole::Tool);
+        if !role_allowed {
+            return Err(ProviderError::message(
+                "DeepSeek vision accepts images only in user messages or Responses tool outputs.",
+            ));
+        }
+        if !matches!(
+            image.mime_type.trim().to_ascii_lowercase().as_str(),
+            "image/jpeg" | "image/png" | "image/gif" | "image/webp"
+        ) {
+            return Err(ProviderError::message(format!(
+                "DeepSeek vision does not support image MIME type `{}`.",
+                image.mime_type
+            )));
+        }
+        validate_deepseek_image_reference(image.artifact.as_str())?;
+    }
+    Ok(())
+}
+
+fn validate_deepseek_image_reference(reference: &str) -> Result<(), ProviderError> {
+    let reference = reference.trim();
+    if reference.starts_with("file-api-") {
+        return Ok(());
+    }
+    if reference.starts_with("http://") || reference.starts_with("https://") {
+        if reference.chars().count() > DEEPSEEK_MAX_EXTERNAL_URL_CHARS {
+            return Err(ProviderError::message(format!(
+                "DeepSeek vision external image URLs may contain at most {DEEPSEEK_MAX_EXTERNAL_URL_CHARS} characters."
+            )));
+        }
+        return Ok(());
+    }
+    let lower = reference.to_ascii_lowercase();
+    let supported_data_url = [
+        "data:image/jpeg;base64,",
+        "data:image/png;base64,",
+        "data:image/gif;base64,",
+        "data:image/webp;base64,",
+    ]
+    .iter()
+    .find(|prefix| lower.starts_with(**prefix));
+    let Some(prefix) = supported_data_url else {
+        return Err(ProviderError::message(
+            "DeepSeek vision image references must be supported base64 data URLs, public HTTP(S) URLs, or Files API file ids.",
+        ));
+    };
+    let payload = &reference[prefix.len()..];
+    let padding = payload.chars().rev().take_while(|ch| *ch == '=').count();
+    let decoded_bytes = payload
+        .len()
+        .saturating_mul(3)
+        .checked_div(4)
+        .unwrap_or(usize::MAX)
+        .saturating_sub(padding.min(2));
+    if decoded_bytes > DEEPSEEK_MAX_INLINE_IMAGE_BYTES {
+        return Err(ProviderError::message(
+            "DeepSeek vision inline images may not exceed 32 MiB each.",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_deepseek_request_body_size(
+    config: &OpenAiCompatibleConfig,
+    request: &ModelTurnRequest,
+    body: &Value,
+) -> Result<(), ProviderError> {
+    if config.family != ApiFamily::DeepSeek
+        || !request.messages.iter().any(|message| {
+            message
+                .content
+                .iter()
+                .any(|part| matches!(part, ContentPart::Image(_)))
+        })
+    {
+        return Ok(());
+    }
+    let bytes = serde_json::to_vec(body)
+        .map_err(|_| ProviderError::message("DeepSeek vision request could not be serialized."))?;
+    if bytes.len() > DEEPSEEK_MAX_REQUEST_BYTES {
+        return Err(ProviderError::message(
+            "DeepSeek vision request bodies may not exceed 48 MiB; upload large images through the Files API and pass their file ids.",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
