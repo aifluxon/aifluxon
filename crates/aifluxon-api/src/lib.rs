@@ -28,7 +28,8 @@ pub use builder::AifluxonBuilder;
 pub use controlled::ControlledProvider;
 pub use events_json::{envelope_to_json, event_to_json, operation_snapshot_to_json};
 pub use prompt::{
-    user_prompt_request, user_prompt_request_with_features, user_prompt_request_with_system,
+    user_content_request_with_system, user_prompt_request, user_prompt_request_with_features,
+    user_prompt_request_with_system,
 };
 pub use providers::{
     register_provider_from_json, ProviderBinding, CODEX_DEFAULT_BASE_URL,

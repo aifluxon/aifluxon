@@ -4,7 +4,7 @@ use crate::budget::AgentBudgetExceeded;
 use crate::continuation::{apply_continuation, ContinuationCounts};
 use crate::{
     can_run_tool_calls_in_parallel, ParallelToolCall, RunTable, ToolDecision, ToolExecutionContext,
-    ToolPolicy, ToolPolicyInput, ToolRegistry,
+    ToolPolicy, ToolPolicyInput, ToolRegistry, ToolResult,
 };
 use aifluxon_core::{
     ContentPart, ExecutionAuthority, Message, MessageRole, ModelEventSink, ModelProvider,
@@ -140,7 +140,9 @@ impl AgentCoordinator {
                 })?;
                 let invocation_id = call.id.hyphenated();
                 let result = self.execute_once_recorded(&invocation_id, || execute(call));
-                request.messages.push(tool_message(call, result));
+                request
+                    .messages
+                    .push(tool_message(call, ToolResult::from_value(result)));
             }
         }
     }
@@ -257,7 +259,7 @@ impl AgentCoordinator {
         })?;
         if let Some(result) = self
             .run_table
-            .cached_tool_result(&self.run_id, &call.id)
+            .cached_tool_execution(&self.run_id, &call.id)
             .map_err(|error| ProviderError::message(error.message()))?
         {
             return Ok(tool_message(&call, result));
@@ -285,7 +287,7 @@ impl AgentCoordinator {
             ToolDecision::Deny { reason } => {
                 return Ok(tool_message(
                     &call,
-                    serde_json::json!({ "ok": false, "error": reason }),
+                    ToolResult::from_value(serde_json::json!({ "ok": false, "error": reason })),
                 ))
             }
             ToolDecision::RequireApproval { operation } => {
@@ -332,10 +334,10 @@ impl AgentCoordinator {
                             .map_err(|error| ProviderError::message(error.message()))?;
                         return Ok(tool_message(
                             &call,
-                            serde_json::json!({
+                            ToolResult::from_value(serde_json::json!({
                                 "ok": false,
                                 "error": reason.unwrap_or_else(|| "Operation rejected.".to_string())
-                            }),
+                            })),
                         ));
                     }
                 };
@@ -376,7 +378,7 @@ impl AgentCoordinator {
                 .map_err(|error| ProviderError::message(error.message()))?;
         }
         self.run_table
-            .record_tool_result(&self.run_id, call.id, result.value.clone())
+            .record_tool_execution(&self.run_id, call.id, result.clone())
             .map_err(|error| ProviderError::message(error.message()))?;
         self.run_table
             .emit(
@@ -388,7 +390,7 @@ impl AgentCoordinator {
                 },
             )
             .map_err(|error| ProviderError::message(error.message()))?;
-        Ok(tool_message(&call, result.value))
+        Ok(tool_message(&call, result))
     }
 }
 
@@ -433,10 +435,14 @@ fn assistant_message(turn: &ModelTurn) -> Message {
     }
 }
 
-fn tool_message(call: &ToolCall, result: Value) -> Message {
+fn tool_message(call: &ToolCall, result: ToolResult) -> Message {
+    let content = result
+        .content
+        .filter(|content| !content.is_empty())
+        .unwrap_or_else(|| vec![ContentPart::Text(result.value.to_string())]);
     Message {
         role: MessageRole::Tool,
-        content: vec![ContentPart::Text(result.to_string())],
+        content,
         tool_calls: Vec::new(),
         tool_call_id: Some(call.id),
         provider_state: call

@@ -1,6 +1,7 @@
 use super::validation::prepare_tool_call;
 use aifluxon_core::{
-    PreparedToolCall, ToolDescriptor, ToolEffect, ToolInvocationId, ToolValidationError,
+    ContentPart, PreparedToolCall, ToolDescriptor, ToolEffect, ToolInvocationId,
+    ToolValidationError,
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -17,6 +18,23 @@ pub struct ToolInvocation {
 #[derive(Clone, Debug)]
 pub struct ToolResult {
     pub value: Value,
+    pub content: Option<Vec<ContentPart>>,
+}
+
+impl ToolResult {
+    pub fn from_value(value: Value) -> Self {
+        Self {
+            value,
+            content: None,
+        }
+    }
+
+    pub fn with_content(value: Value, content: Vec<ContentPart>) -> Self {
+        Self {
+            value,
+            content: Some(content),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -165,6 +183,7 @@ mod tests {
             invocations.fetch_add(1, Ordering::SeqCst);
             Ok(ToolResult {
                 value: json!({ "ok": true, "ran": true }),
+                content: None,
             })
         };
 
@@ -174,6 +193,7 @@ mod tests {
                 invocations.fetch_add(1, Ordering::SeqCst);
                 Ok(ToolResult {
                     value: json!({ "ok": true, "ran": true }),
+                    content: None,
                 })
             })
             .unwrap();
@@ -181,6 +201,22 @@ mod tests {
         assert_eq!(first.value, second.value);
         assert_eq!(invocations.load(Ordering::SeqCst), 1);
         assert_eq!(ledger.execution_count(), 1);
+    }
+
+    #[test]
+    fn cached_tool_result_preserves_multimodal_content() {
+        let ledger = ToolLedger::new();
+        let invocation_id = ToolInvocationId::new();
+        let result = ToolResult::with_content(
+            json!({ "kind": "image" }),
+            vec![ContentPart::Image(aifluxon_core::ImageContent::new(
+                "https://example.com/tool.png",
+                "image/png",
+            ))],
+        );
+        ledger.record(invocation_id, result.clone());
+
+        assert_eq!(ledger.get(&invocation_id).unwrap().content, result.content);
     }
 
     #[test]

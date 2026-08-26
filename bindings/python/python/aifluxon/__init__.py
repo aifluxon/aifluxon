@@ -45,6 +45,7 @@ from .events import (
     ToolStarted,
     UsageUpdated,
 )
+from .input import ImageInput, PromptInput, PromptPart
 from .providers import (
     Codex,
     ControlledProvider,
@@ -98,6 +99,7 @@ __all__ = [
     "FailedError",
     "Gemini",
     "InMemorySessionStore",
+    "ImageInput",
     "InternalError",
     "InvalidConfigurationError",
     "InvalidRequestError",
@@ -109,6 +111,8 @@ __all__ = [
     "PolicyError",
     "ProviderConfig",
     "ProviderError",
+    "PromptInput",
+    "PromptPart",
     "Qwen",
     "ReasoningDelta",
     "RequireApprovalPolicy",

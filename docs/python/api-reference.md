@@ -12,6 +12,8 @@ Inventory of the public Python surface (`aifluxon.__all__`). Internal `_native` 
 | `InMemorySessionStore` | class | Experimental |
 | `JsonFileSessionStore` | class | Experimental |
 | `ProviderConfig` | class | Experimental |
+| `ImageInput` | class | Experimental |
+| `PromptInput` / `PromptPart` | type aliases | Experimental |
 | `OpenAI` | constructor | Experimental |
 | `DeepSeek` | constructor | Experimental |
 | `Qwen` | constructor | Experimental |
@@ -65,11 +67,11 @@ Creates an agent around one AIFLUXON backend. The default `store` is `InMemorySe
 
 ### Methods
 
-#### `await Agent.start(prompt: str, *, session_id: str | None = None, system_prompt=..., reasoning_effort=..., thinking=..., thinking_budget=...) -> Run`
+#### `await Agent.start(prompt: PromptInput, *, session_id: str | None = None, system_prompt=..., reasoning_effort=..., thinking=..., thinking_budget=...) -> Run`
 
 Starts one run. If `session_id` is set, stored messages and provider state for that session are restored first. Per-run `system_prompt` and thinking arguments override Agent defaults; pass `None` to omit a system message on that request (an existing leading system message already stored on the session is kept unless a new `system_prompt` replaces it).
 
-#### `await Agent.run(prompt: str, *, session_id: str | None = None, system_prompt=..., reasoning_effort=..., thinking=..., thinking_budget=...) -> RunResult`
+#### `await Agent.run(prompt: PromptInput, *, session_id: str | None = None, system_prompt=..., reasoning_effort=..., thinking=..., thinking_budget=...) -> RunResult`
 
 `start` plus `result()`.
 
@@ -107,6 +109,25 @@ result = await agent.run("hello")
 ```
 
 Related: `Run`, `Session`, `JsonFileSessionStore`, `ThinkingSettings`.
+
+## `ImageInput`, `PromptPart`, and `PromptInput`
+
+```python
+PromptPart = str | ImageInput
+PromptInput = str | Sequence[PromptPart]
+
+ImageInput(reference: str, mime_type: str)
+ImageInput.from_url(url: str, mime_type: str)
+ImageInput.from_file_id(file_id: str, mime_type: str)
+ImageInput.from_bytes(data: bytes, mime_type: str)
+ImageInput.from_file(path, mime_type: str | None = None)
+```
+
+Plain string prompts remain fully compatible. A sequence preserves the order of text and image parts. URLs must be absolute HTTP(S) URLs. `from_bytes` and `from_file` create base64 data URLs; local filesystem paths never cross the provider boundary. `from_file` infers the MIME type from the extension unless one is supplied.
+
+Image MIME support, reference formats, model eligibility, image counts, and request-size limits remain provider-owned and are checked before network I/O. For DeepSeek, use `deepseek-v4-flash-vision-exp`; supported formats are JPEG, PNG, GIF, and WebP. It accepts public URLs, base64 data URLs, and Files API IDs.
+
+Python tools may return an `ImageInput` or an ordered sequence containing strings and `ImageInput` values. The Runtime stores and replays the complete multimodal tool result without re-executing an already recorded tool call. DeepSeek accepts image tool outputs in Responses mode.
 
 ## `ThinkingSettings`
 
@@ -166,8 +187,8 @@ class RunResult:
 class Session:
     id: str
     revision: int | None
-    async def start(self, prompt: str, *, system_prompt=..., reasoning_effort=..., thinking=..., thinking_budget=...) -> Run: ...
-    async def run(self, prompt: str, *, system_prompt=..., reasoning_effort=..., thinking=..., thinking_budget=...) -> RunResult: ...
+    async def start(self, prompt: PromptInput, *, system_prompt=..., reasoning_effort=..., thinking=..., thinking_budget=...) -> Run: ...
+    async def run(self, prompt: PromptInput, *, system_prompt=..., reasoning_effort=..., thinking=..., thinking_budget=...) -> RunResult: ...
 ```
 
 A session can produce many runs. See [sessions.md](sessions.md).
@@ -202,7 +223,7 @@ Default base URL: `https://api.openai.com/v1`. `api_mode` is `"chat_completions"
 
 ### `DeepSeek(model, *, api_key, base_url=None, api_mode=None)`
 
-Default base URL: `https://api.deepseek.com`. Default API mode: `chat_completions`. `deepseek-v4-flash`, `deepseek-v4-pro`, and `deepseek-v4-flash-vision-exp` also accept `api_mode="responses"`. The current Python prompt surface is text-only; Rust hosts can pass canonical image content to the vision model.
+Default base URL: `https://api.deepseek.com`. Default API mode: `chat_completions`. `deepseek-v4-flash`, `deepseek-v4-pro`, and `deepseek-v4-flash-vision-exp` also accept `api_mode="responses"`. Python and Rust hosts can pass canonical image content to `deepseek-v4-flash-vision-exp`.
 
 ### `Qwen(model, *, api_key, base_url=None, api_mode=None)`
 

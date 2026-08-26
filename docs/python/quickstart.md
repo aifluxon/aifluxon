@@ -150,7 +150,30 @@ await agent.run("Now translate.", system_prompt="You are a translator.")
 
 On a session, a new `system_prompt` replaces the leading system message instead of stacking another copy. See `bindings/python/examples/system_prompt.py`.
 
-## 10. Chat Completions vs Responses
+## 10. Image input
+
+```python
+from aifluxon import Agent, DeepSeek, ImageInput
+
+agent = Agent(
+    DeepSeek(
+        "deepseek-v4-flash-vision-exp",
+        api_key="...",
+        api_mode="responses",
+    )
+)
+result = await agent.run([
+    "Compare these images.",
+    ImageInput.from_url("https://example.com/first.png", "image/png"),
+    ImageInput.from_file("./second.webp"),
+])
+```
+
+`ImageInput.from_file()` reads the file and sends a base64 data URL; it does not expose a local path to the provider. Provider file IDs and in-memory bytes are supported through `from_file_id()` and `from_bytes()`.
+
+A Python tool can return an `ImageInput`, or a sequence such as `["Rendered image", image]`. Multimodal tool output is replay-safe and is available to DeepSeek Vision in Responses mode.
+
+## 11. Chat Completions vs Responses
 
 Every public constructor except `ControlledProvider` takes `api_mode="chat_completions"` or `api_mode="responses"`. `"chat"` is an alias for Chat Completions. `None` uses the family default (Codex defaults to Responses; others default to Chat Completions).
 

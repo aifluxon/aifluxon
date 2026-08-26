@@ -1,13 +1,14 @@
 use aifluxon_api::{
     envelope_to_json, operation_snapshot_to_json, register_provider_from_json,
-    user_prompt_request_with_system, Aifluxon, AifluxonAuthError, AifluxonError,
-    AifluxonErrorKind, AllowAllToolPolicy, CodexAuth, CodexLoginAttempt, CodexProviderHandle,
-    EncryptedFileSecretStore, JsonFileProviderStateStore, JsonFileSessionStore, MemorySecretStore,
-    NoopRunEventSink, OperationDecision, OperationId, OperationMode, PendingOperationDraft,
-    ProviderBinding, ProviderFeatureRequest, ProviderRegistry, RunHandle, RunId, RunLimits,
-    RunSnapshot, SessionId, SystemKeyringStore, ToolDecision, ToolDescriptor, ToolEffect,
-    ToolExecutionContext, ToolExecutionError, ToolExecutor, ToolInvocation, ToolPolicy,
-    ToolPolicyInput, ToolRegistry, ToolResult, DEFAULT_SERVICE_NAME, unlock_encrypted_store,
+    unlock_encrypted_store, user_content_request_with_system, Aifluxon, AifluxonAuthError,
+    AifluxonError, AifluxonErrorKind, AllowAllToolPolicy, CodexAuth, CodexLoginAttempt,
+    CodexProviderHandle, ContentPart, EncryptedFileSecretStore, ImageContent,
+    JsonFileProviderStateStore, JsonFileSessionStore, MemorySecretStore, NoopRunEventSink,
+    OperationDecision, OperationId, OperationMode, PendingOperationDraft, ProviderBinding,
+    ProviderFeatureRequest, ProviderRegistry, RunHandle, RunId, RunLimits, RunSnapshot, SessionId,
+    SystemKeyringStore, ToolDecision, ToolDescriptor, ToolEffect, ToolExecutionContext,
+    ToolExecutionError, ToolExecutor, ToolInvocation, ToolPolicy, ToolPolicyInput, ToolRegistry,
+    ToolResult, DEFAULT_SERVICE_NAME,
 };
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -15,6 +16,7 @@ use pyo3::types::PyAny;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
+use tokio::sync::Mutex as AsyncMutex;
 
 static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
     tokio::runtime::Builder::new_multi_thread()
@@ -29,7 +31,7 @@ struct NativeAgent {
     binding: ProviderBinding,
     limits: RunLimits,
     tools: Arc<ToolRegistry>,
-    runs: Mutex<HashMap<String, Arc<Mutex<RunHandle>>>>,
+    runs: Mutex<HashMap<String, Arc<AsyncMutex<RunHandle>>>>,
 }
 
 #[pymethods]
@@ -106,39 +108,32 @@ impl NativeAgent {
         features_json: Option<&str>,
         system_prompt: Option<&str>,
     ) -> PyResult<String> {
-        let inner = self.inner.clone();
-        let provider = self.binding.provider_id.clone();
-        let model = self.binding.model.clone();
-        let limits = self.limits;
         let prompt = prompt.to_string();
-        let session = session_id
-            .map(SessionId::parse_or_stable_key)
-            .transpose()
-            .map_err(invalid_request)?;
-        let features = parse_features(features_json)?;
-        let system_prompt = system_prompt
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string);
-        let handle = py
-            .detach(|| {
-                RUNTIME.block_on(inner.start(user_prompt_request_with_system(
-                    provider,
-                    model,
-                    prompt,
-                    session,
-                    limits,
-                    features,
-                    system_prompt,
-                )))
-            })
-            .map_err(map_error)?;
-        let run_id = handle.id().hyphenated();
-        self.runs
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(run_id.clone(), Arc::new(Mutex::new(handle)));
-        Ok(run_id)
+        self.start_content(
+            py,
+            vec![ContentPart::Text(prompt)],
+            session_id,
+            features_json,
+            system_prompt,
+        )
+    }
+
+    #[pyo3(signature = (content_json, session_id=None, features_json=None, system_prompt=None))]
+    fn start_with_content(
+        &self,
+        py: Python<'_>,
+        content_json: &str,
+        session_id: Option<&str>,
+        features_json: Option<&str>,
+        system_prompt: Option<&str>,
+    ) -> PyResult<String> {
+        self.start_content(
+            py,
+            parse_content_parts(content_json)?,
+            session_id,
+            features_json,
+            system_prompt,
+        )
     }
 
     fn next_event(&self, py: Python<'_>, run_id: &str) -> PyResult<Option<String>> {
@@ -147,7 +142,7 @@ impl NativeAgent {
             RUNTIME.block_on(async {
                 handle
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .await
                     .events()
                     .next()
                     .await
@@ -248,7 +243,49 @@ impl NativeAgent {
 }
 
 impl NativeAgent {
-    fn run_handle(&self, run_id: &str) -> PyResult<Arc<Mutex<RunHandle>>> {
+    fn start_content(
+        &self,
+        py: Python<'_>,
+        content: Vec<ContentPart>,
+        session_id: Option<&str>,
+        features_json: Option<&str>,
+        system_prompt: Option<&str>,
+    ) -> PyResult<String> {
+        let inner = self.inner.clone();
+        let provider = self.binding.provider_id.clone();
+        let model = self.binding.model.clone();
+        let limits = self.limits;
+        let session = session_id
+            .map(SessionId::parse_or_stable_key)
+            .transpose()
+            .map_err(invalid_request)?;
+        let features = parse_features(features_json)?;
+        let system_prompt = system_prompt
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let handle = py
+            .detach(|| {
+                RUNTIME.block_on(inner.start(user_content_request_with_system(
+                    provider,
+                    model,
+                    content,
+                    session,
+                    limits,
+                    features,
+                    system_prompt,
+                )))
+            })
+            .map_err(map_error)?;
+        let run_id = handle.id().hyphenated();
+        self.runs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(run_id.clone(), Arc::new(AsyncMutex::new(handle)));
+        Ok(run_id)
+    }
+
+    fn run_handle(&self, run_id: &str) -> PyResult<Arc<AsyncMutex<RunHandle>>> {
         self.runs
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -284,7 +321,7 @@ impl ToolExecutor for PythonToolExecutor {
         .map_err(|error| ToolExecutionError::Failed(error.to_string()))?;
         let text = joined.map_err(ToolExecutionError::Failed)?;
         let value = serde_json::from_str(&text).unwrap_or_else(|_| json!({ "result": text }));
-        Ok(ToolResult { value })
+        parse_python_tool_result(value)
     }
 }
 
@@ -476,6 +513,75 @@ fn parse_features(raw: Option<&str>) -> PyResult<ProviderFeatureRequest> {
         prompt_cache_key: None,
         explicit_cache: false,
     })
+}
+
+fn parse_content_parts(raw: &str) -> PyResult<Vec<ContentPart>> {
+    let value: Value = serde_json::from_str(raw).map_err(invalid_request)?;
+    let parts = value
+        .as_array()
+        .filter(|parts| !parts.is_empty())
+        .ok_or_else(|| invalid_request("Multimodal content must be a non-empty JSON array."))?;
+    parts
+        .iter()
+        .enumerate()
+        .map(|(index, part)| {
+            let kind = part
+                .get("type")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid_request(format!("Content part {index} has no `type`.")))?;
+            match kind {
+                "text" => part
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(|text| ContentPart::Text(text.to_string()))
+                    .ok_or_else(|| {
+                        invalid_request(format!("Text content part {index} requires `text`."))
+                    }),
+                "image" => {
+                    let reference = content_part_string(part, index, "reference")?;
+                    let mime_type =
+                        content_part_string(part, index, "mime_type")?.to_ascii_lowercase();
+                    if !mime_type.starts_with("image/") {
+                        return Err(invalid_request(format!(
+                            "Image content part {index} requires an image MIME type."
+                        )));
+                    }
+                    Ok(ContentPart::Image(ImageContent::new(reference, mime_type)))
+                }
+                other => Err(invalid_request(format!(
+                    "Unsupported content part type `{other}` at index {index}."
+                ))),
+            }
+        })
+        .collect()
+}
+
+fn parse_python_tool_result(value: Value) -> Result<ToolResult, ToolExecutionError> {
+    let Some(envelope) = value.get("$aifluxon_tool_result") else {
+        return Ok(ToolResult::from_value(value));
+    };
+    let content_value = envelope.get("content").cloned().unwrap_or(Value::Null);
+    let content = parse_content_parts(&content_value.to_string())
+        .map_err(|error| ToolExecutionError::Failed(error.to_string()))?;
+    let event_value = envelope
+        .get("value")
+        .cloned()
+        .unwrap_or_else(|| json!({ "content": content_value }));
+    Ok(ToolResult::with_content(event_value, content))
+}
+
+fn content_part_string(value: &Value, index: usize, field: &str) -> PyResult<String> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            invalid_request(format!(
+                "Content part {index} requires a non-empty `{field}`."
+            ))
+        })
 }
 
 fn optional_feature_str(value: &Value, field: &str) -> PyResult<Option<String>> {
@@ -702,11 +808,7 @@ impl NativeCodexAuth {
         let accounts = py
             .detach(|| RUNTIME.block_on(auth.accounts()))
             .map_err(map_auth_error)?;
-        Ok(json!(accounts
-            .iter()
-            .map(account_json)
-            .collect::<Vec<_>>())
-        .to_string())
+        Ok(json!(accounts.iter().map(account_json).collect::<Vec<_>>()).to_string())
     }
 
     fn status(&self, py: Python<'_>, account_id: &str) -> PyResult<String> {

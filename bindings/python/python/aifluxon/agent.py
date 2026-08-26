@@ -8,12 +8,18 @@ from dataclasses import dataclass
 from typing import Any
 
 from . import _native
+from .auth import CodexProvider
 from .errors import CancelledError, FailedError, InvalidConfigurationError, call_native
 from .events import Completed, Event, Failed, event_from_payload, is_terminal
+from .input import ImageInput, PromptInput, normalize_prompt_input
 from .providers import ProviderConfig
-from .auth import CodexProvider
 from .session import InMemorySessionStore, JsonFileSessionStore, SessionStore
-from .thinking import ThinkingSettings, _UNSET, merge_thinking_settings, thinking_settings
+from .thinking import (
+    _UNSET,
+    ThinkingSettings,
+    merge_thinking_settings,
+    thinking_settings,
+)
 from .tools import AllowAllPolicy, descriptor_from_callable
 
 
@@ -102,7 +108,7 @@ class Agent:
 
     async def start(
         self,
-        prompt: str,
+        prompt: PromptInput,
         *,
         session_id: str | None = None,
         system_prompt: Any = _UNSET,
@@ -121,10 +127,17 @@ class Agent:
             if system_prompt is _UNSET
             else _normalize_system_prompt(system_prompt)
         )
+        normalized_prompt = normalize_prompt_input(prompt)
+        if isinstance(normalized_prompt, str):
+            start = self._native.start
+            native_prompt = normalized_prompt
+        else:
+            start = self._native.start_with_content
+            native_prompt = json.dumps(normalized_prompt)
         run_id = await asyncio.to_thread(
             call_native,
-            self._native.start,
-            prompt,
+            start,
+            native_prompt,
             session_id,
             json.dumps(settings.to_payload()),
             prompt_system,
@@ -133,7 +146,7 @@ class Agent:
 
     async def run(
         self,
-        prompt: str,
+        prompt: PromptInput,
         *,
         session_id: str | None = None,
         system_prompt: Any = _UNSET,
@@ -192,7 +205,7 @@ class Session:
 
     async def start(
         self,
-        prompt: str,
+        prompt: PromptInput,
         *,
         system_prompt: Any = _UNSET,
         reasoning_effort: Any = _UNSET,
@@ -210,7 +223,7 @@ class Session:
 
     async def run(
         self,
-        prompt: str,
+        prompt: PromptInput,
         *,
         system_prompt: Any = _UNSET,
         reasoning_effort: Any = _UNSET,
@@ -394,8 +407,28 @@ def _normalize_system_prompt(value: Any) -> str | None:
 
 
 def _normalize_tool_result(result: Any) -> Any:
+    multimodal = _normalize_tool_content(result)
+    if multimodal is not None:
+        return {
+            "$aifluxon_tool_result": {
+                "content": multimodal,
+                "value": {"content": multimodal},
+            }
+        }
     if result is None:
         return {"ok": True}
     if isinstance(result, (dict, list, str, int, float, bool)):
         return result if isinstance(result, dict) else {"result": result}
     return {"result": str(result)}
+
+
+def _normalize_tool_content(result: Any) -> list[dict[str, str]] | None:
+    if isinstance(result, ImageInput):
+        return [result._to_payload()]
+    if isinstance(result, Sequence) and not isinstance(
+        result, (str, bytes, bytearray, memoryview, dict)
+    ):
+        parts = normalize_prompt_input(result)
+        if isinstance(parts, list) and any(part["type"] == "image" for part in parts):
+            return parts
+    return None

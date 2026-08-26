@@ -10,6 +10,7 @@ from aifluxon import (
     Agent,
     ControlledProvider,
     EncryptedFileSecretStore,
+    ImageInput,
     JsonFileSessionStore,
     ToolEffect,
     tool,
@@ -23,6 +24,12 @@ async def smoke() -> None:
     result = await Agent(ControlledProvider(["wheel-ok"])).run("hello")
     assert result.state == "completed"
     assert result.text == "wheel-ok"
+
+    image = ImageInput.from_bytes(b"wheel-image", "image/png")
+    multimodal = await Agent(ControlledProvider(["multimodal-ok"])).run(
+        ["inspect", image]
+    )
+    assert multimodal.text == "multimodal-ok"
 
     with tempfile.TemporaryDirectory(prefix="aifluxon-wheel-") as directory:
         root = Path(directory)

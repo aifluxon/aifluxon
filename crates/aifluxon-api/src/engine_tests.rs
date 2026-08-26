@@ -88,6 +88,7 @@ impl ToolExecutor for EchoTool {
         self.executions.fetch_add(1, Ordering::SeqCst);
         Ok(ToolResult {
             value: json!({ "ok": true, "name": invocation.name }),
+            content: None,
         })
     }
 }

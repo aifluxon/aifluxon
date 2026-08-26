@@ -49,9 +49,29 @@ pub fn user_prompt_request_with_system(
     features: ProviderFeatureRequest,
     system_prompt: Option<impl Into<String>>,
 ) -> RunRequest {
+    user_content_request_with_system(
+        provider,
+        model,
+        vec![ContentPart::Text(prompt.into())],
+        session_id,
+        limits,
+        features,
+        system_prompt,
+    )
+}
+
+pub fn user_content_request_with_system(
+    provider: ProviderId,
+    model: impl Into<String>,
+    content: Vec<ContentPart>,
+    session_id: Option<SessionId>,
+    limits: RunLimits,
+    features: ProviderFeatureRequest,
+    system_prompt: Option<impl Into<String>>,
+) -> RunRequest {
     RunRequest {
         session_id,
-        messages: prompt_messages(prompt, system_prompt),
+        messages: content_messages(content, system_prompt),
         model: ModelRef {
             provider,
             model: model.into(),
@@ -81,8 +101,8 @@ pub(crate) fn merge_session_and_request_messages(
     merged
 }
 
-fn prompt_messages(
-    prompt: impl Into<String>,
+fn content_messages(
+    content: Vec<ContentPart>,
     system_prompt: Option<impl Into<String>>,
 ) -> Vec<Message> {
     let mut messages = Vec::new();
@@ -93,7 +113,13 @@ fn prompt_messages(
             messages.push(text_message(MessageRole::System, trimmed));
         }
     }
-    messages.push(text_message(MessageRole::User, prompt.into()));
+    messages.push(Message {
+        role: MessageRole::User,
+        content,
+        tool_calls: Vec::new(),
+        tool_call_id: None,
+        provider_state: None,
+    });
     messages
 }
 
@@ -187,6 +213,30 @@ mod tests {
         .messages
         .iter()
         .all(|message| message.role != MessageRole::System));
+    }
+
+    #[test]
+    fn content_helper_preserves_ordered_text_and_image_parts() {
+        let content = vec![
+            ContentPart::Text("inspect".to_string()),
+            ContentPart::Image(aifluxon_core::ImageContent::new(
+                "https://example.com/input.png",
+                "image/png",
+            )),
+            ContentPart::Text("describe the result".to_string()),
+        ];
+        let request = user_content_request_with_system(
+            ProviderId::new("deepseek"),
+            "deepseek-v4-flash-vision-exp",
+            content.clone(),
+            None,
+            RunLimits::default(),
+            ProviderFeatureRequest::default(),
+            Some("Use visual evidence."),
+        );
+        assert_eq!(request.messages.len(), 2);
+        assert_eq!(request.messages[0].role, MessageRole::System);
+        assert_eq!(request.messages[1].content, content);
     }
 
     #[test]

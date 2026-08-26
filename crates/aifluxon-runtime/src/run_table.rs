@@ -436,7 +436,9 @@ impl RunTable {
             .map(|record| record.ledger.clone())
             .ok_or(RunTableError::UnknownRun)?;
         ledger
-            .execute_once(invocation_id, || Ok(crate::ToolResult { value: execute() }))
+            .execute_once(invocation_id, || {
+                Ok(crate::ToolResult::from_value(execute()))
+            })
             .map(|result| result.value)
             .map_err(|_| RunTableError::StoreUnavailable)
     }
@@ -455,6 +457,20 @@ impl RunTable {
         Ok(ledger.get(invocation_id).map(|result| result.value))
     }
 
+    pub(crate) fn cached_tool_execution(
+        &self,
+        run_id: &RunId,
+        invocation_id: &ToolInvocationId,
+    ) -> Result<Option<crate::ToolResult>, RunTableError> {
+        let ledger = self
+            .lock()?
+            .runs
+            .get(run_id)
+            .map(|record| record.ledger.clone())
+            .ok_or(RunTableError::UnknownRun)?;
+        Ok(ledger.get(invocation_id))
+    }
+
     pub fn record_tool_result(
         &self,
         run_id: &RunId,
@@ -467,7 +483,23 @@ impl RunTable {
             .get(run_id)
             .map(|record| record.ledger.clone())
             .ok_or(RunTableError::UnknownRun)?;
-        ledger.record(invocation_id, crate::ToolResult { value });
+        ledger.record(invocation_id, crate::ToolResult::from_value(value));
+        Ok(())
+    }
+
+    pub(crate) fn record_tool_execution(
+        &self,
+        run_id: &RunId,
+        invocation_id: ToolInvocationId,
+        result: crate::ToolResult,
+    ) -> Result<(), RunTableError> {
+        let ledger = self
+            .lock()?
+            .runs
+            .get(run_id)
+            .map(|record| record.ledger.clone())
+            .ok_or(RunTableError::UnknownRun)?;
+        ledger.record(invocation_id, result);
         Ok(())
     }
 

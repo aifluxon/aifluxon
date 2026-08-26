@@ -130,6 +130,7 @@ mod tests {
         ) -> Result<ToolResult, ToolExecutionError> {
             Ok(ToolResult {
                 value: json!({ "ok": true }),
+                content: None,
             })
         }
     }

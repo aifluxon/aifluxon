@@ -4,6 +4,10 @@
 
 ## 0.2.0
 
+- Added ordered multimodal Python prompts with public URL, provider file ID, bytes, data URL, and local-file image sources.
+- Added replay-safe Python tool image results for OpenAI-compatible Responses providers, including DeepSeek Vision.
+- Added Python protocol regression coverage for Custom provider tool-call IDs in Chat Completions and Responses modes.
+
 ### Added
 
 - Linux x86_64 and Linux aarch64 Python wheels for CPython 3.11–3.14.

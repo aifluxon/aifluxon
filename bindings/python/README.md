@@ -29,6 +29,20 @@ async def main():
 asyncio.run(main())
 ```
 
+Multimodal prompt:
+
+```python
+from aifluxon import Agent, DeepSeek, ImageInput
+
+agent = Agent(DeepSeek("deepseek-v4-flash-vision-exp", api_key="...", api_mode="responses"))
+result = await agent.run([
+    "Describe this image.",
+    ImageInput.from_file("./input.png"),
+])
+```
+
+`ImageInput` also accepts public URLs, provider file IDs, bytes, and data URLs. Python tools can return `ImageInput` values for multimodal tool output.
+
 `ControlledProvider` is offline. Public providers: OpenAI, DeepSeek, Qwen, Kimi, Gemini, Codex, Custom. ChatGPT Web and DeepSeek Web are not included in this SDK.
 
 Documentation: https://github.com/aifluxon/aifluxon/blob/main/docs/python/README.md
