@@ -15,67 +15,358 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+  AIFLUXON_VERSION: "0.2.0"
+
 jobs:
-  build:
-    if: ${{ github.event.inputs.publish_to_pypi != 'true' }}
-    runs-on: windows-latest
+  release-contract:
+    if: ${{ inputs.publish_to_pypi != true }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+      - run: python scripts/ci/check_python_version_consistency.py
+      - run: python -m pip install packaging
+      - run: python scripts/ci/test_verify_python_wheels.py
+
+  rust-quality:
+    if: ${{ inputs.publish_to_pypi != true }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: rustup update stable
+      - run: rustup default stable
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+
+  windows-x64-wheels:
+    needs: [release-contract, rust-quality]
+    if: ${{ inputs.publish_to_pypi != true }}
+    runs-on: windows-2025
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        include:
+          - python: "3.11"
+            tag: cp311
+          - python: "3.12"
+            tag: cp312
+          - python: "3.13"
+            tag: cp313
+          - python: "3.14"
+            tag: cp314
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: ${{ matrix.python }}
           architecture: x64
-      - uses: PyO3/maturin-action@v1
-        with:
-          command: build
-          args: --release --out dist
-          working-directory: bindings/python
-          target: x86_64-pc-windows-msvc
-      - name: Reject non-Windows-x64 wheels
+      - name: Ensure empty wheel output
         shell: pwsh
         run: |
-          $wheels = Get-ChildItem bindings/python/dist -Filter *.whl
-          if (-not $wheels) { throw "No wheels produced" }
-          foreach ($wheel in $wheels) {
-            if ($wheel.Name -notmatch "win_amd64") {
-              throw "Unexpected wheel platform: $($wheel.Name)"
-            }
+          if (Test-Path -LiteralPath "bindings/python/dist") {
+            Remove-Item -LiteralPath "bindings/python/dist" -Recurse -Force
           }
-          $wheels | ForEach-Object { $_.Name }
-      - uses: actions/upload-artifact@v4
+      - uses: PyO3/maturin-action@423a6347767a8b16e65c2a7a7042e4a921528da8 # v1
         with:
-          name: wheel-cp${{ matrix.python-version }}
+          command: build
+          target: x86_64-pc-windows-msvc
+          working-directory: bindings/python
+          args: >-
+            --release
+            --locked
+            -i python
+            --out dist
+      - name: Clean-install and smoke wheel
+        shell: pwsh
+        run: |
+          $wheel = Get-ChildItem bindings/python/dist -Filter *.whl -File
+          if ($wheel.Count -ne 1 -or $wheel.Name -notmatch "${{ matrix.tag }}-${{ matrix.tag }}-win_amd64") {
+            throw "Expected one ${{ matrix.tag }} win_amd64 wheel"
+          }
+          $venv = Join-Path $env:RUNNER_TEMP "aifluxon-wheel-${{ matrix.tag }}"
+          python -m venv $venv
+          & "$venv\Scripts\python.exe" -m pip install --no-deps $wheel.FullName
+          Push-Location $env:RUNNER_TEMP
+          & "$venv\Scripts\python.exe" "$env:GITHUB_WORKSPACE\bindings\python\tests\wheel_smoke.py"
+          Pop-Location
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: wheel-win-x64-${{ matrix.tag }}
           path: bindings/python/dist/*.whl
           if-no-files-found: error
+          retention-days: 30
+
+  linux-x64-wheels:
+    needs: [release-contract, rust-quality]
+    if: ${{ inputs.publish_to_pypi != true }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: "3.11"
+            tag: cp311
+          - python: "3.12"
+            tag: cp312
+          - python: "3.13"
+            tag: cp313
+          - python: "3.14"
+            tag: cp314
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Ensure empty wheel output
+        run: rm -rf -- bindings/python/dist
+      - uses: PyO3/maturin-action@423a6347767a8b16e65c2a7a7042e4a921528da8 # v1
+        with:
+          command: build
+          target: x86_64-unknown-linux-gnu
+          manylinux: "2014"
+          working-directory: bindings/python
+          args: >-
+            --release
+            --locked
+            --compatibility pypi
+            -i python${{ matrix.python }}
+            --out dist
+      - name: Audit native dependencies
+        run: |
+          python -m pip install auditwheel
+          mapfile -t wheels < <(find bindings/python/dist -maxdepth 1 -name '*.whl' -print)
+          test "${#wheels[@]}" -eq 1
+          wheel="${wheels[0]}"
+          python -m auditwheel show "$wheel"
+          python scripts/ci/audit_linux_wheel.py "$wheel"
+      - name: Clean-install and smoke wheel
+        run: |
+          mapfile -t wheels < <(find bindings/python/dist -maxdepth 1 -name '*.whl' -print)
+          test "${#wheels[@]}" -eq 1
+          wheel="${wheels[0]}"
+          venv="$RUNNER_TEMP/aifluxon-wheel-${{ matrix.tag }}"
+          python -m venv "$venv"
+          "$venv/bin/python" -m pip install --no-deps "$wheel"
+          cd "$RUNNER_TEMP"
+          "$venv/bin/python" "$GITHUB_WORKSPACE/bindings/python/tests/wheel_smoke.py"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: wheel-linux-x64-${{ matrix.tag }}
+          path: bindings/python/dist/*.whl
+          if-no-files-found: error
+          retention-days: 30
+
+  linux-arm64-wheels:
+    needs: [release-contract, rust-quality]
+    if: ${{ inputs.publish_to_pypi != true }}
+    runs-on: ubuntu-24.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: "3.11"
+            tag: cp311
+          - python: "3.12"
+            tag: cp312
+          - python: "3.13"
+            tag: cp313
+          - python: "3.14"
+            tag: cp314
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Ensure empty wheel output
+        run: rm -rf -- bindings/python/dist
+      - uses: PyO3/maturin-action@423a6347767a8b16e65c2a7a7042e4a921528da8 # v1
+        with:
+          command: build
+          target: aarch64-unknown-linux-gnu
+          manylinux: "2014"
+          working-directory: bindings/python
+          args: >-
+            --release
+            --locked
+            --compatibility pypi
+            -i python${{ matrix.python }}
+            --out dist
+      - name: Audit native dependencies
+        run: |
+          python -m pip install auditwheel
+          mapfile -t wheels < <(find bindings/python/dist -maxdepth 1 -name '*.whl' -print)
+          test "${#wheels[@]}" -eq 1
+          wheel="${wheels[0]}"
+          python -m auditwheel show "$wheel"
+          python scripts/ci/audit_linux_wheel.py "$wheel"
+      - name: Clean-install and smoke wheel on native ARM64
+        run: |
+          mapfile -t wheels < <(find bindings/python/dist -maxdepth 1 -name '*.whl' -print)
+          test "${#wheels[@]}" -eq 1
+          wheel="${wheels[0]}"
+          venv="$RUNNER_TEMP/aifluxon-wheel-${{ matrix.tag }}"
+          python -m venv "$venv"
+          "$venv/bin/python" -m pip install --no-deps "$wheel"
+          cd "$RUNNER_TEMP"
+          "$venv/bin/python" "$GITHUB_WORKSPACE/bindings/python/tests/wheel_smoke.py"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: wheel-linux-arm64-${{ matrix.tag }}
+          path: bindings/python/dist/*.whl
+          if-no-files-found: error
+          retention-days: 30
+
+  verified-bundle:
+    needs: [windows-x64-wheels, linux-x64-wheels, linux-arm64-wheels]
+    if: ${{ inputs.publish_to_pypi != true }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: wheel-*
+          path: downloaded
+          merge-multiple: true
+      - name: Verify matrix and create immutable bundle
+        run: |
+          python -m pip install packaging
+          mkdir -p bundle/wheels
+          cp downloaded/*.whl bundle/wheels/
+          python scripts/ci/verify_python_wheels.py \
+            --dist bundle/wheels \
+            --manifest bundle/release-manifest.json
+          cp scripts/ci/verify_python_wheels.py bundle/verify_python_wheels.py
+          python bundle/verify_python_wheels.py \
+            --dist bundle/wheels \
+            --manifest bundle/release-manifest.json \
+            --verify-manifest
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: aifluxon-python-${{ env.AIFLUXON_VERSION }}-verified
+          path: bundle
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
 
   publish-testpypi:
-    needs: build
-    if: ${{ github.event.inputs.publish_to_pypi != 'true' }}
-    runs-on: ubuntu-latest
+    needs: verified-bundle
+    if: ${{ inputs.publish_to_pypi != true }}
+    runs-on: ubuntu-24.04
     environment: testpypi
     permissions:
       contents: read
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
-          path: dist
-          merge-multiple: true
-      - name: List wheels
-        run: ls -la dist && ls dist/*.whl
-      - uses: pypa/gh-action-pypi-publish@release/v1
+          python-version: "3.11"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: aifluxon-python-${{ env.AIFLUXON_VERSION }}-verified
+          path: bundle
+      - name: Reverify immutable bundle
+        run: |
+          python -m pip install packaging
+          python bundle/verify_python_wheels.py \
+            --dist bundle/wheels \
+            --manifest bundle/release-manifest.json \
+            --verify-manifest
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
-          packages-dir: dist
+          packages-dir: bundle/wheels
           skip-existing: false
 
+  testpypi-windows:
+    needs: publish-testpypi
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python }}
+          architecture: x64
+      - name: Install from TestPyPI and smoke
+        shell: pwsh
+        run: |
+          $installed = $false
+          foreach ($attempt in 1..12) {
+            python -m pip install --no-cache-dir --no-deps --index-url https://test.pypi.org/simple/ "aifluxon==$env:AIFLUXON_VERSION"
+            if ($LASTEXITCODE -eq 0) { $installed = $true; break }
+            Start-Sleep -Seconds 10
+          }
+          if (-not $installed) { throw "TestPyPI resolver did not expose the wheel" }
+          Push-Location $env:RUNNER_TEMP
+          python "$env:GITHUB_WORKSPACE\bindings\python\tests\wheel_smoke.py"
+          Pop-Location
+
+  testpypi-linux-x64:
+    needs: publish-testpypi
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install from TestPyPI and smoke
+        run: |
+          installed=false
+          for attempt in $(seq 1 12); do
+            if python -m pip install --no-cache-dir --no-deps --index-url https://test.pypi.org/simple/ "aifluxon==$AIFLUXON_VERSION"; then
+              installed=true
+              break
+            fi
+            sleep 10
+          done
+          test "$installed" = true
+          cd "$RUNNER_TEMP"
+          python "$GITHUB_WORKSPACE/bindings/python/tests/wheel_smoke.py"
+
+  testpypi-linux-arm64:
+    needs: publish-testpypi
+    runs-on: ubuntu-24.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install from TestPyPI and smoke on native ARM64
+        run: |
+          installed=false
+          for attempt in $(seq 1 12); do
+            if python -m pip install --no-cache-dir --no-deps --index-url https://test.pypi.org/simple/ "aifluxon==$AIFLUXON_VERSION"; then
+              installed=true
+              break
+            fi
+            sleep 10
+          done
+          test "$installed" = true
+          cd "$RUNNER_TEMP"
+          python "$GITHUB_WORKSPACE/bindings/python/tests/wheel_smoke.py"
+
   publish-pypi:
-    if: ${{ github.event.inputs.publish_to_pypi == 'true' }}
-    runs-on: ubuntu-latest
+    if: ${{ inputs.publish_to_pypi == true }}
+    runs-on: ubuntu-24.04
     environment: pypi
     permissions:
       contents: read
@@ -87,33 +378,24 @@ jobs:
         run: |
           echo "source_run_id is required when publishing to production PyPI" >&2
           exit 1
-      - uses: actions/download-artifact@v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: aifluxon-python-${{ env.AIFLUXON_VERSION }}-verified
           github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
           run-id: ${{ inputs.source_run_id }}
-          path: dist
-          merge-multiple: true
-      - name: Verify win_amd64 wheels only
+          path: bundle
+      - name: Verify exact TestPyPI artifacts and checksums
         run: |
-          set -euo pipefail
-          ls -la dist
-          shopt -s nullglob
-          wheels=(dist/*.whl)
-          if [ ${#wheels[@]} -eq 0 ]; then
-            echo "No wheels downloaded from run ${{ inputs.source_run_id }}" >&2
-            exit 1
-          fi
-          for wheel in "${wheels[@]}"; do
-            echo "$wheel"
-            case "$wheel" in
-              *win_amd64.whl) ;;
-              *)
-                echo "Refusing non-win_amd64 artifact: $wheel" >&2
-                exit 1
-                ;;
-            esac
-          done
-      - uses: pypa/gh-action-pypi-publish@release/v1
+          python -m pip install packaging
+          python bundle/verify_python_wheels.py \
+            --dist bundle/wheels \
+            --manifest bundle/release-manifest.json \
+            --verify-manifest
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
-          packages-dir: dist
+          packages-dir: bundle/wheels
           skip-existing: false
