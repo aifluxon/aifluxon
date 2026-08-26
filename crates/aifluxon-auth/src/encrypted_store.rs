@@ -77,11 +77,20 @@ impl EncryptedFileSecretStore {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if self.path.exists() {
             let bytes = fs::read(&self.path).map_err(store_io)?;
-            let (salt, m_cost, t_cost, p_cost, nonce, ciphertext) = parse_vault(&bytes)?;
-            let key = derive_key(password.expose().as_bytes(), &salt, m_cost, t_cost, p_cost)?;
+            let parsed = parse_vault(&bytes)?;
+            let key = derive_key(
+                password.expose().as_bytes(),
+                &parsed.salt,
+                parsed.m_cost,
+                parsed.t_cost,
+                parsed.p_cost,
+            )?;
             let cipher = XChaCha20Poly1305::new(Key::from_slice(&key));
             let plaintext = cipher
-                .decrypt(XNonce::from_slice(&nonce), ciphertext.as_ref())
+                .decrypt(
+                    XNonce::from_slice(&parsed.nonce),
+                    parsed.ciphertext.as_ref(),
+                )
                 .map_err(|_| {
                     AuthError::new(
                         AuthErrorKind::CredentialCorrupted,
@@ -101,10 +110,10 @@ impl EncryptedFileSecretStore {
                 )
             })?;
             state.key = Some(key);
-            state.salt = Some(salt);
-            state.m_cost = m_cost;
-            state.t_cost = t_cost;
-            state.p_cost = p_cost;
+            state.salt = Some(parsed.salt);
+            state.m_cost = parsed.m_cost;
+            state.t_cost = parsed.t_cost;
+            state.p_cost = parsed.p_cost;
             state.values = Some(object);
             Ok(())
         } else {
@@ -223,9 +232,16 @@ fn derive_key(
     Ok(key)
 }
 
-fn parse_vault(
-    bytes: &[u8],
-) -> Result<([u8; SALT_LEN], u32, u32, u32, [u8; NONCE_LEN], Vec<u8>), AuthError> {
+struct ParsedVault {
+    salt: [u8; SALT_LEN],
+    m_cost: u32,
+    t_cost: u32,
+    p_cost: u32,
+    nonce: [u8; NONCE_LEN],
+    ciphertext: Vec<u8>,
+}
+
+fn parse_vault(bytes: &[u8]) -> Result<ParsedVault, AuthError> {
     let header_len = 8 + 2 + SALT_LEN + 12 + NONCE_LEN;
     if bytes.len() < header_len || bytes.get(..8) != Some(MAGIC.as_slice()) {
         return Err(AuthError::new(
@@ -247,7 +263,14 @@ fn parse_vault(
     let p_cost = u32::from_le_bytes(bytes[34..38].try_into().unwrap());
     let mut nonce = [0_u8; NONCE_LEN];
     nonce.copy_from_slice(&bytes[38..62]);
-    Ok((salt, m_cost, t_cost, p_cost, nonce, bytes[62..].to_vec()))
+    Ok(ParsedVault {
+        salt,
+        m_cost,
+        t_cost,
+        p_cost,
+        nonce,
+        ciphertext: bytes[62..].to_vec(),
+    })
 }
 
 fn encode_vault(
@@ -297,7 +320,10 @@ fn write_vault(
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600)).map_err(|error| {
+            let _ = fs::remove_file(&tmp);
+            store_io(error)
+        })?;
     }
     fs::rename(&tmp, path).map_err(|error| {
         let _ = fs::remove_file(&tmp);
@@ -456,5 +482,19 @@ mod tests {
         let left = fs::read(a.path()).unwrap();
         let right = fs::read(b.path()).unwrap();
         assert_ne!(&left[10..26], &right[10..26]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn encrypted_vault_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("credentials.vault");
+        let store = EncryptedFileSecretStore::new(&path);
+        store.unlock(&SecretString::new("pw")).unwrap();
+
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 }

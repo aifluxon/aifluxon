@@ -10,6 +10,7 @@ const KEYRING_CHUNK_MAX_UTF16_UNITS: usize = 1_024;
 #[cfg(test)]
 const WINDOWS_CREDENTIAL_BLOB_MAX_BYTES: usize = 2_560;
 const KEYRING_CHUNK_MAX_COUNT: usize = 64;
+// Persisted compatibility identifier. Do not rename without a migration path.
 const KEYRING_CHUNK_MANIFEST_PREFIX: &str = "easyphy-keyring-chunks:v1:";
 
 pub const DEFAULT_SERVICE_NAME: &str = "AIFLUXON";
@@ -408,7 +409,7 @@ mod tests {
     fn missing_chunk_fails_closed() {
         let store = SystemKeyringStore::with_memory_backend("test");
         store
-            .set("k", &SecretString::new(&"x".repeat(3_000)))
+            .set("k", &SecretString::new("x".repeat(3_000)))
             .unwrap();
         let backend = store.backend();
         let stored = backend.get("k").unwrap().unwrap();
@@ -444,7 +445,7 @@ mod tests {
     fn replacing_long_secret_cleans_old_generation() {
         let store = SystemKeyringStore::with_memory_backend("test");
         store
-            .set("k", &SecretString::new(&"a".repeat(3_000)))
+            .set("k", &SecretString::new("a".repeat(3_000)))
             .unwrap();
         let first_manifest = {
             let backend = store.backend();
@@ -453,7 +454,7 @@ mod tests {
                 .unwrap()
         };
         store
-            .set("k", &SecretString::new(&"b".repeat(3_000)))
+            .set("k", &SecretString::new("b".repeat(3_000)))
             .unwrap();
         let backend = store.backend();
         assert!(backend
@@ -466,7 +467,7 @@ mod tests {
     fn replacing_long_with_short_cleans_old_generation() {
         let store = SystemKeyringStore::with_memory_backend("test");
         store
-            .set("k", &SecretString::new(&"a".repeat(3_000)))
+            .set("k", &SecretString::new("a".repeat(3_000)))
             .unwrap();
         let first_manifest = {
             let backend = store.backend();
@@ -487,7 +488,7 @@ mod tests {
     fn deleting_long_secret_deletes_manifest_and_chunks() {
         let store = SystemKeyringStore::with_memory_backend("test");
         store
-            .set("k", &SecretString::new(&"a".repeat(3_000)))
+            .set("k", &SecretString::new("a".repeat(3_000)))
             .unwrap();
         let manifest = {
             let backend = store.backend();

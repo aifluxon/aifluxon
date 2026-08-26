@@ -16,7 +16,7 @@ directories = "6"
 hex = "0.4"
 keyring = "2"
 rand = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"

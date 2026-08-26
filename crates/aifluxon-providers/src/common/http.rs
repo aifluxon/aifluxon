@@ -27,7 +27,7 @@ impl Default for HttpClientTuning {
 
 pub fn build_http_client(tuning: HttpClientTuning) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder()
-        .use_native_tls()
+        .use_rustls_tls()
         .pool_max_idle_per_host(tuning.pool_max_idle_per_host)
         .pool_idle_timeout(tuning.pool_idle_timeout)
         .connect_timeout(tuning.connect_timeout)

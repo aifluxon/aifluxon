@@ -62,7 +62,7 @@ impl TokenTransport for ReqwestTokenTransport {
 
 fn oauth_client() -> Result<reqwest::Client, AuthError> {
     reqwest::Client::builder()
-        .use_native_tls()
+        .use_rustls_tls()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(30))
         .timeout(Duration::from_secs(60))
