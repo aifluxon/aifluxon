@@ -48,7 +48,7 @@ dependencies = [
 
 [[package]]
 name = "aifluxon-api"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "aifluxon-auth",
  "aifluxon-core",
@@ -62,7 +62,7 @@ dependencies = [
 
 [[package]]
 name = "aifluxon-auth"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "async-trait",
@@ -84,7 +84,7 @@ dependencies = [
 
 [[package]]
 name = "aifluxon-core"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "serde",
@@ -95,7 +95,7 @@ dependencies = [
 
 [[package]]
 name = "aifluxon-providers"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "aifluxon-auth",
  "aifluxon-core",
@@ -110,7 +110,7 @@ dependencies = [
 
 [[package]]
 name = "aifluxon-python"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "aifluxon-api",
  "async-trait",
@@ -121,7 +121,7 @@ dependencies = [
 
 [[package]]
 name = "aifluxon-runtime"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "aifluxon-core",
  "async-trait",
