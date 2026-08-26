@@ -96,9 +96,7 @@ impl AifluxonBuilder {
             tool_policy,
             event_sink,
             workspace,
-            run_table: self
-                .run_table
-                .unwrap_or_else(aifluxon_runtime::RunTable::new),
+            run_table: self.run_table.unwrap_or_default(),
             session_store,
             provider_state_store,
             checkpoint_store,

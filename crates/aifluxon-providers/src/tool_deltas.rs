@@ -87,8 +87,8 @@ impl ToolCallAssembler {
                 let stable_key = provider_call_id
                     .clone()
                     .unwrap_or_else(|| format!("{}:{}", call.name, call.arguments));
-                let arguments = serde_json::from_str(&call.arguments)
-                    .unwrap_or_else(|_| Value::String(call.arguments));
+                let arguments =
+                    serde_json::from_str(&call.arguments).unwrap_or(Value::String(call.arguments));
                 ToolCall {
                     id: ToolInvocationId::from_stable_key(&stable_key),
                     name: call.name,

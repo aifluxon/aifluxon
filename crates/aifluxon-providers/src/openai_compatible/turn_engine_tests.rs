@@ -154,9 +154,8 @@ const RESPONSES_INCOMPLETE: &str = concat!(
     "data: {\"type\":\"response.incomplete\",\"sequence_number\":2,\"response\":{\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}\n\n"
 );
 
-const RESPONSES_CANCELLED_STREAM: &str = concat!(
-    "data: {\"type\":\"response.output_text.delta\",\"sequence_number\":1,\"delta\":\"partial\"}\n\n"
-);
+const RESPONSES_CANCELLED_STREAM: &str =
+    "data: {\"type\":\"response.output_text.delta\",\"sequence_number\":1,\"delta\":\"partial\"}\n\n";
 
 #[test]
 fn chat_fixture_preserves_visible_reasoning_usage_terminal_and_event_order() {

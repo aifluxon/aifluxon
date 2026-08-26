@@ -77,6 +77,7 @@ impl JsonFileSessionStore {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(self.lock_path())
             .map_err(io_error)?;
         file.lock_exclusive().map_err(io_error)?;
@@ -255,6 +256,7 @@ impl JsonFileProviderStateStore {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(self.lock_path())
             .map_err(io_error)?;
         file.lock_exclusive().map_err(io_error)?;

@@ -214,9 +214,11 @@ fn openai_responses_required_models_do_not_stay_on_chat() {
 
 #[test]
 fn openai_prompt_cache_key_is_copied_from_features() {
-    let mut features = aifluxon_core::ProviderFeatureRequest::default();
-    features.prompt_cache_key = Some("easyphy-cache".to_string());
-    features.reasoning_effort = Some("high".to_string());
+    let features = aifluxon_core::ProviderFeatureRequest {
+        prompt_cache_key: Some("easyphy-cache".to_string()),
+        reasoning_effort: Some("high".to_string()),
+        ..Default::default()
+    };
     let body = decorated_chat(ApiFamily::OpenAi, &request_with("gpt-5.1", features));
     assert_eq!(body["prompt_cache_key"], "easyphy-cache");
     assert_eq!(body["reasoning_effort"], "high");
@@ -224,9 +226,11 @@ fn openai_prompt_cache_key_is_copied_from_features() {
 
 #[test]
 fn deepseek_chat_thinking_and_tool_choice_stay_family_specific() {
-    let mut features = aifluxon_core::ProviderFeatureRequest::default();
-    features.thinking_mode = Some("enabled".to_string());
-    features.reasoning_effort = Some("low".to_string());
+    let features = aifluxon_core::ProviderFeatureRequest {
+        thinking_mode: Some("enabled".to_string()),
+        reasoning_effort: Some("low".to_string()),
+        ..Default::default()
+    };
     let body = decorated_chat(
         ApiFamily::DeepSeek,
         &request_with("deepseek-v4-flash", features),
@@ -238,9 +242,11 @@ fn deepseek_chat_thinking_and_tool_choice_stay_family_specific() {
 
 #[test]
 fn deepseek_v4_flash_keeps_responses_and_native_search_shape() {
-    let mut features = aifluxon_core::ProviderFeatureRequest::default();
-    features.web_search = true;
-    features.thinking_mode = Some("enabled".to_string());
+    let features = aifluxon_core::ProviderFeatureRequest {
+        web_search: true,
+        thinking_mode: Some("enabled".to_string()),
+        ..Default::default()
+    };
     let body = decorated_responses(
         ApiFamily::DeepSeek,
         &request_with("deepseek-v4-flash", features),
@@ -261,9 +267,11 @@ fn deepseek_v4_pro_keeps_requested_responses_and_maps_low_effort() {
         decorate::effective_api_mode(&config, "deepseek-chat"),
         OpenAiApiMode::ChatCompletions
     );
-    let mut features = aifluxon_core::ProviderFeatureRequest::default();
-    features.thinking_mode = Some("enabled".to_string());
-    features.reasoning_effort = Some("low".to_string());
+    let features = aifluxon_core::ProviderFeatureRequest {
+        thinking_mode: Some("enabled".to_string()),
+        reasoning_effort: Some("low".to_string()),
+        ..Default::default()
+    };
     let body = decorated_responses(
         ApiFamily::DeepSeek,
         &request_with("deepseek-v4-pro", features),
@@ -273,10 +281,12 @@ fn deepseek_v4_pro_keeps_requested_responses_and_maps_low_effort() {
 
 #[test]
 fn qwen_chat_thinking_budget_and_explicit_cache_markers_are_applied() {
-    let mut features = aifluxon_core::ProviderFeatureRequest::default();
-    features.thinking_mode = Some("enabled".to_string());
-    features.thinking_budget = Some("8192".to_string());
-    features.explicit_cache = true;
+    let features = aifluxon_core::ProviderFeatureRequest {
+        thinking_mode: Some("enabled".to_string()),
+        thinking_budget: Some("8192".to_string()),
+        explicit_cache: true,
+        ..Default::default()
+    };
     let mut request = request_with("qwen3-max", features);
     request.messages[0].content = vec![ContentPart::Text("x".repeat(5000))];
     let body = decorated_chat(ApiFamily::Qwen, &request);
@@ -340,8 +350,10 @@ fn openai_does_not_replay_reasoning_content_on_assistant_history() {
 
 #[test]
 fn kimi_session_cache_and_thinking_stay_on_the_kimi_family() {
-    let mut features = aifluxon_core::ProviderFeatureRequest::default();
-    features.prompt_cache_key = Some("easyphy-kimi-stable".to_string());
+    let features = aifluxon_core::ProviderFeatureRequest {
+        prompt_cache_key: Some("easyphy-kimi-stable".to_string()),
+        ..Default::default()
+    };
     let body = decorated_chat(ApiFamily::Kimi, &request_with("kimi-k2.6", features));
     assert_eq!(body["prompt_cache_key"], "easyphy-kimi-stable");
     assert_eq!(body["thinking"]["type"], "enabled");
@@ -352,8 +364,10 @@ fn kimi_session_cache_and_thinking_stay_on_the_kimi_family() {
 
 #[test]
 fn gemini_chat_normalizes_reasoning_effort() {
-    let mut features = aifluxon_core::ProviderFeatureRequest::default();
-    features.reasoning_effort = Some("xhigh".to_string());
+    let features = aifluxon_core::ProviderFeatureRequest {
+        reasoning_effort: Some("xhigh".to_string()),
+        ..Default::default()
+    };
     let body = decorated_chat(
         ApiFamily::Gemini,
         &request_with("gemini-2.5-flash", features),
@@ -363,10 +377,12 @@ fn gemini_chat_normalizes_reasoning_effort() {
 
 #[test]
 fn codex_responses_contract_and_hosted_search_are_preserved() {
-    let mut features = aifluxon_core::ProviderFeatureRequest::default();
-    features.reasoning_effort = Some("medium".to_string());
-    features.web_search = true;
-    features.image_generation = true;
+    let features = aifluxon_core::ProviderFeatureRequest {
+        reasoning_effort: Some("medium".to_string()),
+        web_search: true,
+        image_generation: true,
+        ..Default::default()
+    };
     let body = decorated_responses(
         ApiFamily::Codex,
         &request_with("codex-mini-latest", features),
@@ -424,8 +440,10 @@ async fn deepseek_tool_mode_retry_stays_inside_one_logical_turn() {
 
 #[test]
 fn custom_family_is_not_flattened_to_openai_official_defaults() {
-    let mut features = aifluxon_core::ProviderFeatureRequest::default();
-    features.prompt_cache_key = Some("portable".to_string());
+    let features = aifluxon_core::ProviderFeatureRequest {
+        prompt_cache_key: Some("portable".to_string()),
+        ..Default::default()
+    };
     let body = decorated_chat(ApiFamily::Custom, &request_with("custom-model", features));
     assert_eq!(body["prompt_cache_key"], "portable");
     assert_eq!(

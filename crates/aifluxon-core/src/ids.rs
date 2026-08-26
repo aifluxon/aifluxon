@@ -29,6 +29,12 @@ pub struct OperationId(pub Uuid);
 
 macro_rules! uuid_id_impl {
     ($name:ident) => {
+        impl Default for $name {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+
         impl $name {
             pub fn new() -> Self {
                 Self(Uuid::new_v4())

@@ -124,10 +124,12 @@ mod tests {
 
     #[test]
     fn prompt_helper_forwards_thinking_features() {
-        let mut features = ProviderFeatureRequest::default();
-        features.reasoning_effort = Some("high".to_string());
-        features.thinking_mode = Some("enabled".to_string());
-        features.thinking_budget = Some("8192".to_string());
+        let features = ProviderFeatureRequest {
+            reasoning_effort: Some("high".to_string()),
+            thinking_mode: Some("enabled".to_string()),
+            thinking_budget: Some("8192".to_string()),
+            ..Default::default()
+        };
         let request = user_prompt_request_with_features(
             ProviderId::new("qwen"),
             "qwen-plus",

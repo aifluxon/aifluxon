@@ -224,6 +224,25 @@ impl CodexProviderHandle {
     }
 }
 
+impl std::fmt::Debug for CodexProviderHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CodexProviderHandle")
+            .field("provider_id", &"codex")
+            .field("model", &self.model)
+            .field("account_id", &self.account_id)
+            .finish()
+    }
+}
+
+pub fn unlock_encrypted_store(
+    store: &EncryptedFileSecretStore,
+    password: &str,
+) -> Result<(), AifluxonAuthError> {
+    store
+        .unlock(&SecretString::new(password))
+        .map_err(AifluxonAuthError::from)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,23 +296,4 @@ mod tests {
         let error = auth.provider("gpt-5.6-codex", None).unwrap_err();
         assert_eq!(error.kind(), AuthErrorKind::AccountSelectionRequired);
     }
-}
-
-impl std::fmt::Debug for CodexProviderHandle {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CodexProviderHandle")
-            .field("provider_id", &"codex")
-            .field("model", &self.model)
-            .field("account_id", &self.account_id)
-            .finish()
-    }
-}
-
-pub fn unlock_encrypted_store(
-    store: &EncryptedFileSecretStore,
-    password: &str,
-) -> Result<(), AifluxonAuthError> {
-    store
-        .unlock(&SecretString::new(password))
-        .map_err(AifluxonAuthError::from)
 }

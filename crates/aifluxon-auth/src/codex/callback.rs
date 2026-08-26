@@ -97,62 +97,60 @@ pub async fn wait_for_callback(
     timeout: Duration,
 ) -> Result<(String, TcpStream), AuthError> {
     let deadline = Instant::now() + timeout;
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Err(AuthError::new(
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err(AuthError::new(
+            AuthErrorKind::CallbackTimeout,
+            "Codex authorization timed out.",
+        ));
+    }
+    let (mut stream, _) = tokio::time::timeout(remaining, listener.accept())
+        .await
+        .map_err(|_| {
+            AuthError::new(
                 AuthErrorKind::CallbackTimeout,
                 "Codex authorization timed out.",
-            ));
-        }
-        let (mut stream, _) = tokio::time::timeout(remaining, listener.accept())
+            )
+        })?
+        .map_err(|error| {
+            AuthError::new(
+                AuthErrorKind::CallbackProtocol,
+                format!("Codex login callback accept failed: {error}"),
+            )
+        })?;
+    let mut request = Vec::new();
+    let mut chunk = [0_u8; 2048];
+    while request.len() < 16 * 1024 && !request.windows(4).any(|part| part == b"\r\n\r\n") {
+        let read = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut chunk))
             .await
             .map_err(|_| {
                 AuthError::new(
                     AuthErrorKind::CallbackTimeout,
-                    "Codex authorization timed out.",
+                    "Codex login callback read timed out.",
                 )
             })?
             .map_err(|error| {
                 AuthError::new(
                     AuthErrorKind::CallbackProtocol,
-                    format!("Codex login callback accept failed: {error}"),
+                    format!("Codex login callback read failed: {error}"),
                 )
             })?;
-        let mut request = Vec::new();
-        let mut chunk = [0_u8; 2048];
-        while request.len() < 16 * 1024 && !request.windows(4).any(|part| part == b"\r\n\r\n") {
-            let read = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut chunk))
-                .await
-                .map_err(|_| {
-                    AuthError::new(
-                        AuthErrorKind::CallbackTimeout,
-                        "Codex login callback read timed out.",
-                    )
-                })?
-                .map_err(|error| {
-                    AuthError::new(
-                        AuthErrorKind::CallbackProtocol,
-                        format!("Codex login callback read failed: {error}"),
-                    )
-                })?;
-            if read == 0 {
-                break;
-            }
-            request.extend_from_slice(&chunk[..read]);
+        if read == 0 {
+            break;
         }
-        let first_line = String::from_utf8_lossy(&request)
-            .lines()
-            .next()
-            .unwrap_or_default()
-            .to_string();
-        let target = first_line.split_whitespace().nth(1).unwrap_or_default();
-        match callback_code_from_target(target, expected_state) {
-            Ok(code) => return Ok((code, stream)),
-            Err(error) => {
-                write_callback_response(&mut stream, false).await;
-                return Err(error);
-            }
+        request.extend_from_slice(&chunk[..read]);
+    }
+    let first_line = String::from_utf8_lossy(&request)
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    let target = first_line.split_whitespace().nth(1).unwrap_or_default();
+    match callback_code_from_target(target, expected_state) {
+        Ok(code) => Ok((code, stream)),
+        Err(error) => {
+            write_callback_response(&mut stream, false).await;
+            Err(error)
         }
     }
 }

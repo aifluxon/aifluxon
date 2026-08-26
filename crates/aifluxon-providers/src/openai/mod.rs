@@ -130,10 +130,7 @@ mod strategy_tests {
 
     #[test]
     fn required_models_route_to_responses() {
-        assert_eq!(
-            capabilities("gpt-5.4-codex").supports_chat_completions,
-            false
-        );
+        assert!(!capabilities("gpt-5.4-codex").supports_chat_completions);
         assert!(capabilities("gpt-4.1").supports_chat_completions);
     }
 

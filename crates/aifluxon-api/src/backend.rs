@@ -664,7 +664,7 @@ mod tests {
         while let Some(event) = handle.events().next().await {
             if matches!(
                 event.event,
-                RunEvent::Completed { .. } | RunEvent::Failed { .. } | RunEvent::Cancelled { .. }
+                RunEvent::Completed { .. } | RunEvent::Failed { .. } | RunEvent::Cancelled
             ) {
                 return;
             }

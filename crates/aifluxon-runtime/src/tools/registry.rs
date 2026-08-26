@@ -103,9 +103,9 @@ impl ToolRegistry {
         name: &str,
         raw_arguments: &str,
     ) -> Result<(ToolInvocation, Arc<dyn ToolExecutor>), ToolExecutionError> {
-        let registered = self
-            .resolve(name)
-            .ok_or_else(|| ToolExecutionError::Validation(ToolValidationError::UnknownTool))?;
+        let registered = self.resolve(name).ok_or(ToolExecutionError::Validation(
+            ToolValidationError::UnknownTool,
+        ))?;
         let invocation = prepare_invocation(invocation_id, registered.descriptor(), raw_arguments)?;
         Ok((invocation, registered.executor()))
     }
