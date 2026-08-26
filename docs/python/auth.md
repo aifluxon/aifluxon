@@ -4,7 +4,7 @@ Python does not implement OAuth. It binds to `aifluxon-api::CodexAuth`.
 
 Credentials live in the OS secure store or an encrypted vault. Python code must not read access tokens, refresh tokens, or ID tokens.
 
-Published 0.1.1 wheels are Windows x86_64 only. The auth architecture is still cross-platform.
+Published 0.2.0 wheels support Windows x86_64 and Linux glibc x86_64/aarch64. The Python API and structured auth errors are identical across these platforms.
 
 ## Login
 
@@ -57,13 +57,21 @@ CodexAuth(secret_store=SystemKeyringStore(service_name="My Product"))
 CodexAuth(secret_store=MemorySecretStore())
 ```
 
-Headless:
+On desktop Linux, `CodexAuth()` uses `SystemKeyringStore` and requires an available Secret Service session. If the session or backend is unavailable, the operation raises `CredentialStoreUnavailableError`; AIFLUXON does not silently fall back to a file.
+
+For SSH, systemd services, and containers, select the encrypted store explicitly:
 
 ```python
+from aifluxon import CodexAuth, EncryptedFileSecretStore
+
 store = EncryptedFileSecretStore("~/.local/share/aifluxon/credentials.vault")
 await store.unlock(password)
 auth = CodexAuth(secret_store=store)
 ```
+
+Supply `password` from the host's secret manager or a protected credential file, not from source code. The vault keeps the `AFLXCRD1` format, is owner-only on Unix, and fails closed for a wrong password or corrupted data. `await store.lock()` prevents later credential reads; it does not cancel an HTTP request that already resolved its bearer token.
+
+See [Linux headless operations](../auth/linux-headless.md) for systemd and container deployment guidance.
 
 ## Static API key
 

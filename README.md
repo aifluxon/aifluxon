@@ -124,7 +124,7 @@ assert_eq!(run.result().await?.text, "hello");
 # }
 ```
 
-The Rust crates are consumed as a Git dependency in `0.1.1`; they are not published to crates.io yet.
+The Rust crates are consumed as a Git dependency in `0.2.0`; they are not published to crates.io yet.
 
 ```toml
 aifluxon-api = { git = "https://github.com/aifluxon/aifluxon", rev = "<commit>" }
@@ -136,8 +136,8 @@ Hosts that implement custom providers or lower-level extension contracts may als
 
 The Python SDK is an official binding over the same `aifluxon-api` runtime.
 
-```powershell
-pip install aifluxon
+```bash
+python -m pip install aifluxon
 ```
 
 ```python
@@ -154,20 +154,21 @@ asyncio.run(main())
 
 `ControlledProvider` is offline and useful for tests and examples. Public network providers are configured with their own credentials in memory.
 
-### Python distribution support in 0.1.1
+### Python distribution support in 0.2.0
 
 | Requirement | Support |
 | --- | --- |
 | Windows 10 / 11, x86_64 | Supported |
-| CPython 3.11, 3.12, 3.13, 3.14 | Supported (`win_amd64` wheels) |
+| Linux glibc, x86_64 | Supported (`manylinux2014` wheels) |
+| Linux glibc, aarch64 | Supported (`manylinux2014` wheels) |
+| CPython 3.11, 3.12, 3.13, 3.14 | Supported with ABI-specific wheels |
 | Windows ARM64 | Not supported |
-| Linux | Not supported by the published Python package |
 | macOS | Not supported by the published Python package |
-| CPython 3.10 / PyPy / other ABIs | Not supported |
+| Alpine/musl, Linux i686, CPython 3.14t, PyPy | Not supported |
 
-Published Python wheels do not require a Rust toolchain. Each supported CPython minor version currently uses its own wheel; the package is not `abi3` in `0.1.1`.
+Published Python wheels do not require a Rust toolchain. Linux wheels follow PEP 600 with a glibc 2.17 baseline. Each supported CPython minor version uses its own wheel; 0.2.0 does not use `abi3`.
 
-The **Python wheel support matrix does not define the architecture boundary of AIFLUXON itself**: the runtime remains an embeddable Rust backend, while the current packaged Python distribution is intentionally Windows-first.
+The **Python wheel support matrix does not define the architecture boundary of AIFLUXON itself**: the runtime remains an embeddable Rust backend, while the table above is the formal support contract for prebuilt Python packages.
 
 ## Providers
 
@@ -318,11 +319,24 @@ maturin develop
 pytest
 ```
 
+Linux uses the same source and public API:
+
+```bash
+cargo test --workspace
+
+cd bindings/python
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install maturin pytest pytest-asyncio
+maturin develop
+pytest
+```
+
 The root `Cargo.lock` is tracked so release wheels rebuild against the same Rust dependency graph.
 
 ## Status
 
-AIFLUXON `0.1.x` is **experimental**. Public APIs may still evolve before a stable release.
+AIFLUXON `0.2.x` is **experimental**. Public APIs may still evolve before a stable release.
 
 ## License
 

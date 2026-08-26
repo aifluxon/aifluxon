@@ -124,7 +124,7 @@ assert_eq!(run.result().await?.text, "hello");
 # }
 ```
 
-在 `0.1.1` 中，Rust crates 目前通过 Git dependency 使用，暂未发布到 crates.io：
+在 `0.2.0` 中，Rust crates 目前通过 Git dependency 使用，暂未发布到 crates.io：
 
 ```toml
 aifluxon-api = { git = "https://github.com/aifluxon/aifluxon", rev = "<commit>" }
@@ -136,8 +136,8 @@ aifluxon-api = { git = "https://github.com/aifluxon/aifluxon", rev = "<commit>" 
 
 Python SDK 是建立在同一个 `aifluxon-api` Runtime 之上的官方 Binding。
 
-```powershell
-pip install aifluxon
+```bash
+python -m pip install aifluxon
 ```
 
 ```python
@@ -154,20 +154,21 @@ asyncio.run(main())
 
 `ControlledProvider` 完全离线，适用于测试和示例。正式网络 Provider 的凭据只在内存中传递。
 
-### 0.1.1 Python Distribution 支持范围
+### 0.2.0 Python Distribution 支持范围
 
 | 环境 | 支持状态 |
 | --- | --- |
 | Windows 10 / 11, x86_64 | 支持 |
-| CPython 3.11、3.12、3.13、3.14 | 支持（`win_amd64` wheels） |
+| Linux glibc, x86_64 | 支持（`manylinux2014` wheels） |
+| Linux glibc, aarch64 | 支持（`manylinux2014` wheels） |
+| CPython 3.11、3.12、3.13、3.14 | 使用 ABI-specific wheels 支持 |
 | Windows ARM64 | 不支持 |
-| Linux | 当前发布的 Python package 不支持 |
 | macOS | 当前发布的 Python package 不支持 |
-| CPython 3.10 / PyPy / 其它 ABI | 不支持 |
+| Alpine/musl、Linux i686、CPython 3.14t、PyPy | 不支持 |
 
-已发布的 Python wheel 不要求用户安装 Rust toolchain。当前每个受支持的 CPython minor version 使用独立 wheel；`0.1.1` 还不是 `abi3` package。
+已发布的 Python wheel 不要求用户安装 Rust toolchain。Linux wheel 遵循 PEP 600，glibc 基线为 2.17。每个受支持的 CPython minor version 使用独立 wheel；0.2.0 不使用 `abi3`。
 
-需要特别区分：**Python wheel 的平台支持范围不等于 AIFLUXON 本身的架构边界。** AIFLUXON 仍然是可嵌入的 Rust Agent Backend，只是当前 Python 发行版有意采用 Windows-first 策略。
+需要特别区分：**Python wheel 的平台支持范围不等于 AIFLUXON 本身的架构边界。** AIFLUXON 仍然是可嵌入的 Rust Agent Backend；上表是预编译 Python package 的正式支持合同。
 
 ## Providers
 
@@ -318,11 +319,24 @@ maturin develop
 pytest
 ```
 
+Linux 使用相同源码与公共 API：
+
+```bash
+cargo test --workspace
+
+cd bindings/python
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install maturin pytest pytest-asyncio
+maturin develop
+pytest
+```
+
 根目录 `Cargo.lock` 会被跟踪，以确保 release wheel 可以基于同一套 Rust dependency graph 重建。
 
 ## 当前状态
 
-AIFLUXON `0.1.x` 当前处于 **Experimental** 阶段，Public API 在稳定版之前仍可能继续演进。
+AIFLUXON `0.2.x` 当前处于 **Experimental** 阶段，Public API 在稳定版之前仍可能继续演进。
 
 ## License
 

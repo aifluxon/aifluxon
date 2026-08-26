@@ -1,14 +1,24 @@
 # Quick Start
 
-This page documents APIs that exist in 0.1.1.
+This page documents APIs that exist in 0.2.0.
 
 ## Install
 
-```powershell
-pip install aifluxon
+```bash
+python -m pip install aifluxon
 ```
 
-Requires Windows 10/11 x86_64 and CPython 3.11–3.14. See [README](README.md) to build from source with `maturin develop`.
+Requires CPython 3.11–3.14 on Windows 10/11 x86_64, Linux glibc x86_64, or Linux glibc aarch64. On Ubuntu, install Python and its venv support, then run the same command:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y python3 python3-venv
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install aifluxon
+```
+
+Published wheels do not require Rust, OpenSSL development headers, libsecret development headers, or DBus development headers. Alpine/musl is not supported by the 0.2.0 wheel set. See [README](README.md) for source development with `maturin develop`.
 
 ## 1. Import and run a prompt
 

@@ -16,18 +16,20 @@ The SDK is **experimental**. Public names are listed in `aifluxon.__all__`. Help
 
 ## Install
 
-```powershell
-pip install aifluxon
+```bash
+python -m pip install aifluxon
 ```
 
 | Platform | Status |
 | -------- | ------ |
 | Windows 10/11 x86_64 | Supported |
+| Linux glibc x86_64 | Supported |
+| Linux glibc aarch64 | Supported |
 | Windows ARM64 | Not supported |
-| Linux | Not supported in 0.1.1 |
-| macOS | Not supported in 0.1.1 |
+| Alpine Linux / musl | Not supported by 0.2.0 wheels |
+| macOS | Not yet a Python wheel target |
 
-Requires **CPython 3.11–3.14**. Wheels are ABI-specific (`cp3xx-win_amd64`), not a single abi3 wheel.
+Requires **CPython 3.11–3.14**. Wheels are ABI-specific (`cp3xx`), not a single abi3 wheel. Linux wheels use manylinux2014 / PEP 600 with a glibc 2.17 baseline. CPython 3.14 free-threaded builds, PyPy, Linux i686, and Windows ARM64 are outside the 0.2.0 release contract.
 
 ## Quick start
 

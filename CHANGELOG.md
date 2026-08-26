@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## 0.2.0
+
+### Added
+
+- Linux x86_64 and Linux aarch64 Python wheels for CPython 3.11–3.14.
+- manylinux2014 / glibc 2.17 compatibility with native x86_64 and ARM64 clean-install verification.
+- Cross-platform source tests, concurrent-agent smoke coverage, wheel matrix validation, and native dependency audits.
+
+### Changed
+
+- Provider and OAuth HTTP clients now use Rustls with native certificate roots instead of native-tls.
+- Python release promotion now verifies a 12-wheel matrix and SHA256 manifest, then reuses the exact TestPyPI-verified artifacts for production PyPI.
+
+### Security
+
+- Linux headless authentication uses an explicitly selected encrypted vault with no plaintext or implicit credential-store fallback.
+- Unix encrypted vault creation enforces owner-only `0600` permissions and fails closed if permissions cannot be applied.
+
 ## 0.1.1
 
 - Codex OAuth is owned by `aifluxon-auth` and exposed through `aifluxon-api::CodexAuth` and the Python `CodexAuth` SDK.
