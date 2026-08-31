@@ -13,14 +13,13 @@ pub fn apply_turn_continuation(family: ApiFamily, tools_enabled: bool, turn: &mu
         turn.terminal = ProviderTerminal::Continue(ContinuationReason::ProviderRequested);
         return;
     }
-    if tools_enabled && family != ApiFamily::DeepSeek && promised_tool_work_without_call(&turn.text)
-    {
+    if tools_enabled && promised_tool_work_without_call(&turn.text) {
         turn.terminal = ProviderTerminal::Continue(ContinuationReason::Incomplete);
     }
 }
 
 pub fn promised_tool_work_without_call(content: &str) -> bool {
-    let text = content.trim();
+    let text = strip_leading_acknowledgement(content.trim());
     if text.is_empty() {
         return false;
     }
@@ -49,6 +48,7 @@ pub fn promised_tool_work_without_call(content: &str) -> bool {
         "定位",
         "运行",
         "验证",
+        "了解",
         "执行命令",
         "用 shell",
         "使用 shell",
@@ -241,10 +241,35 @@ fn chinese_clause_promises_tool_work(clause: &str, action_markers: &[&str]) -> b
         "实现",
         "依赖",
         "工作区",
+        "迁移",
+        "schema",
+        "字段",
+        "帮助",
     ]
     .iter()
     .any(|target| clause.contains(target));
     explicit_tool || (action && target)
+}
+
+fn strip_leading_acknowledgement(text: &str) -> &str {
+    const PREFIXES: [&str; 12] = [
+        "好的。",
+        "好的，",
+        "好的,",
+        "可以。",
+        "可以，",
+        "明白。",
+        "明白，",
+        "收到。",
+        "收到，",
+        "没问题。",
+        "没问题，",
+        "好。",
+    ];
+    PREFIXES
+        .iter()
+        .find_map(|prefix| text.strip_prefix(prefix).map(str::trim_start))
+        .unwrap_or(text)
 }
 
 #[cfg(test)]
@@ -273,6 +298,9 @@ mod tests {
         ));
         assert!(promised_tool_work_without_call(
             "我会先查看当前文件，再运行针对性测试。"
+        ));
+        assert!(promised_tool_work_without_call(
+            "好的。我先了解 v2.2 的迁移方式与 IR 2.2 新字段（面部表演、对话耦合），再执行升级并加台词。先查看迁移帮助和 schema："
         ));
         assert!(!promised_tool_work_without_call(
             "检查结果：语法检查通过，程序启动成功。"
@@ -310,10 +338,20 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_never_retries_a_completed_text_turn_from_natural_language() {
-        let mut turn = stop_turn("我先查看当前文件。", json!({}));
+    fn deepseek_continues_when_visible_text_promises_tool_work() {
+        let mut turn = stop_turn(
+            "好的。我先了解 v2.2 的迁移方式与 IR 2.2 新字段，再执行升级。",
+            json!({}),
+        );
         apply_turn_continuation(ApiFamily::DeepSeek, true, &mut turn);
-        assert_eq!(turn.terminal, ProviderTerminal::Stop);
+        assert_eq!(
+            turn.terminal,
+            ProviderTerminal::Continue(ContinuationReason::Incomplete)
+        );
+
+        let mut completed = stop_turn("升级完成，所有验证均已通过。", json!({}));
+        apply_turn_continuation(ApiFamily::DeepSeek, true, &mut completed);
+        assert_eq!(completed.terminal, ProviderTerminal::Stop);
     }
 
     #[test]
