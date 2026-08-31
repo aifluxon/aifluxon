@@ -168,18 +168,45 @@ fn stop_turn(text: &str) -> ModelTurn {
 }
 
 fn tool_turn(name: &str, id: &str) -> ModelTurn {
+    tool_turn_with_arguments(name, id, json!({}))
+}
+
+fn tool_turn_with_arguments(name: &str, id: &str, arguments: serde_json::Value) -> ModelTurn {
     ModelTurn {
         text: String::new(),
         reasoning: String::new(),
         tool_calls: vec![ToolCall {
             id: ToolInvocationId::from_stable_key(id),
             name: name.to_string(),
-            arguments: json!({}),
+            arguments,
             provider_call_id: Some(id.to_string()),
         }],
         usage: None,
         terminal: ProviderTerminal::ToolCalls,
         opaque: json!({}),
+    }
+}
+
+fn validated_edit_descriptor() -> ToolDescriptor {
+    ToolDescriptor {
+        name: "edit_file".to_string(),
+        description: "edit".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "edit": {
+                    "type": "object",
+                    "properties": {
+                        "summary": { "type": "string" }
+                    },
+                    "required": ["summary"]
+                }
+            },
+            "required": ["edit"]
+        }),
+        effect: ToolEffect::FsWrite,
+        required_capabilities: Vec::new(),
+        parallel_safe: false,
     }
 }
 
@@ -296,6 +323,87 @@ async fn tool_result_continues_the_model_turn() {
         RunEvent::Completed { .. }
     ));
     assert_eq!(executions.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn argument_validation_returns_a_retryable_tool_result_and_model_can_retry() {
+    let executions = Arc::new(AtomicUsize::new(0));
+    let provider = scripted(vec![
+        stop_turn("after-retry"),
+        tool_turn_with_arguments(
+            "edit_file",
+            "call-invalid",
+            json!({ "edit": { "summary": "Apply the requested change" } }),
+        ),
+        tool_turn_with_arguments(
+            "edit_file",
+            "call-invalid",
+            json!({ "edit": { "summary": null } }),
+        ),
+    ]);
+    let requests = provider.requests.clone();
+    let registry = ProviderRegistry::new();
+    registry
+        .register(ProviderId::new("scripted"), provider)
+        .unwrap();
+    let tools = ToolRegistry::new();
+    tools
+        .register(
+            validated_edit_descriptor(),
+            Arc::new(EchoTool {
+                executions: executions.clone(),
+            }),
+        )
+        .unwrap();
+    let backend = backend(registry, tools, Arc::new(AllowAllToolPolicy));
+    let mut handle = backend.start(user_request("scripted")).await.unwrap();
+    let invalid_id = ToolInvocationId::from_stable_key("call-invalid");
+    let mut validation_result = None;
+    let mut completed = false;
+    while let Some(envelope) = handle.events().next().await {
+        match envelope.event {
+            RunEvent::ToolFinished {
+                invocation_id,
+                result,
+                ..
+            } if invocation_id == invalid_id
+                && result["errorCode"] == "TOOL_ARGUMENT_VALIDATION_FAILED" =>
+            {
+                validation_result = Some(result)
+            }
+            RunEvent::Failed { message } => panic!("validation must not fail the run: {message}"),
+            RunEvent::Completed { .. } => completed = true,
+            _ => {}
+        }
+    }
+
+    assert!(completed);
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        validation_result.unwrap(),
+        json!({
+            "ok": false,
+            "error": "null is not of type \"string\"",
+            "errorCode": "TOOL_ARGUMENT_VALIDATION_FAILED",
+            "validation": {
+                "kind": "type",
+                "path": "/edit/summary",
+                "pathFormat": "json_pointer",
+                "retryable": true,
+            }
+        })
+    );
+
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    let retry_input = requests[1].messages.last().expect("validation tool result");
+    assert_eq!(retry_input.role, MessageRole::Tool);
+    let ContentPart::Text(serialized_result) = &retry_input.content[0] else {
+        panic!("validation result must be text for provider retry");
+    };
+    let retry_value: serde_json::Value = serde_json::from_str(serialized_result).unwrap();
+    assert_eq!(retry_value["validation"]["path"], "/edit/summary");
+    assert_eq!(retry_value["validation"]["retryable"], true);
 }
 
 #[tokio::test]

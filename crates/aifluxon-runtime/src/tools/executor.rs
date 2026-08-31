@@ -148,7 +148,13 @@ pub fn validation_error_value(error: &ToolValidationError) -> Value {
     serde_json::json!({
         "ok": false,
         "error": error.message(),
-        "errorCode": "TOOL_VALIDATION_FAILED",
+        "errorCode": "TOOL_ARGUMENT_VALIDATION_FAILED",
+        "validation": {
+            "kind": error.kind(),
+            "path": error.path(),
+            "pathFormat": "json_pointer",
+            "retryable": true,
+        },
     })
 }
 
@@ -230,5 +236,29 @@ mod tests {
             ))
         ));
         assert_eq!(executed.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn validation_result_is_structured_and_retryable() {
+        let error = ToolValidationError::SchemaViolation {
+            kind: "type".to_string(),
+            path: "/edit/summary".to_string(),
+            message: "null is not of type string".to_string(),
+        };
+
+        assert_eq!(
+            validation_error_value(&error),
+            json!({
+                "ok": false,
+                "error": "null is not of type string",
+                "errorCode": "TOOL_ARGUMENT_VALIDATION_FAILED",
+                "validation": {
+                    "kind": "type",
+                    "path": "/edit/summary",
+                    "pathFormat": "json_pointer",
+                    "retryable": true,
+                }
+            })
+        );
     }
 }

@@ -4,7 +4,7 @@ use crate::budget::AgentBudgetExceeded;
 use crate::continuation::{apply_continuation, ContinuationCounts};
 use crate::{
     can_run_tool_calls_in_parallel, ParallelToolCall, RunTable, ToolDecision, ToolExecutionContext,
-    ToolPolicy, ToolPolicyInput, ToolRegistry, ToolResult,
+    ToolExecutionError, ToolPolicy, ToolPolicyInput, ToolRegistry, ToolResult,
 };
 use aifluxon_core::{
     ContentPart, ExecutionAuthority, Message, MessageRole, ModelEventSink, ModelProvider,
@@ -267,9 +267,14 @@ impl AgentCoordinator {
         let raw_arguments = serde_json::to_string(&call.arguments).map_err(|error| {
             ProviderError::message(format!("Tool arguments are invalid: {error}"))
         })?;
-        let (invocation, executor) = tools
-            .prepare_invocation(call.id, &call.name, &raw_arguments)
-            .map_err(|error| ProviderError::message(error.message()))?;
+        let (invocation, executor) =
+            match tools.prepare_invocation(call.id, &call.name, &raw_arguments) {
+                Ok(prepared) => prepared,
+                Err(ToolExecutionError::Validation(error)) if error.is_argument_validation() => {
+                    return self.finish_argument_validation(&call, error);
+                }
+                Err(error) => return Err(ProviderError::message(error.message())),
+            };
         let registered = tools
             .resolve(&call.name)
             .ok_or_else(|| ProviderError::message("Tool disappeared during execution."))?;
@@ -391,6 +396,35 @@ impl AgentCoordinator {
             )
             .map_err(|error| ProviderError::message(error.message()))?;
         Ok(tool_message(&call, result))
+    }
+
+    fn finish_argument_validation(
+        &self,
+        call: &ToolCall,
+        error: aifluxon_core::ToolValidationError,
+    ) -> Result<Message, ProviderError> {
+        let result = ToolResult::from_value(crate::validation_error_value(&error));
+        self.run_table
+            .emit(
+                &self.run_id,
+                RunEvent::ToolStarted {
+                    invocation_id: call.id,
+                    name: call.name.clone(),
+                    arguments: call.arguments.clone(),
+                },
+            )
+            .map_err(|error| ProviderError::message(error.message()))?;
+        self.run_table
+            .emit(
+                &self.run_id,
+                RunEvent::ToolFinished {
+                    invocation_id: call.id,
+                    name: call.name.clone(),
+                    result: result.value.clone(),
+                },
+            )
+            .map_err(|error| ProviderError::message(error.message()))?;
+        Ok(tool_message(call, result))
     }
 }
 

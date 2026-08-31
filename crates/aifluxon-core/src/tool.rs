@@ -31,10 +31,23 @@ pub enum ToolValidationError {
     InvalidJson,
     OversizedArgument,
     UnknownTool,
-    MissingRequiredField { field: String },
-    WrongFieldType { field: String },
-    UnknownEnum { field: String },
-    SchemaInvalid { message: String },
+    MissingRequiredField {
+        field: String,
+    },
+    WrongFieldType {
+        field: String,
+    },
+    UnknownEnum {
+        field: String,
+    },
+    SchemaViolation {
+        kind: String,
+        path: String,
+        message: String,
+    },
+    SchemaInvalid {
+        message: String,
+    },
 }
 
 impl ToolValidationError {
@@ -54,8 +67,39 @@ impl ToolValidationError {
             Self::UnknownEnum { field } => {
                 format!("Tool argument `{field}` is not an allowed enum value.")
             }
+            Self::SchemaViolation { message, .. } => message.clone(),
             Self::SchemaInvalid { message } => message.clone(),
         }
+    }
+
+    pub fn kind(&self) -> &str {
+        match self {
+            Self::InvalidJson => "invalid_json",
+            Self::OversizedArgument => "argument_too_large",
+            Self::UnknownTool => "unknown_tool",
+            Self::MissingRequiredField { .. } => "required",
+            Self::WrongFieldType { .. } => "type",
+            Self::UnknownEnum { .. } => "enum",
+            Self::SchemaViolation { kind, .. } => kind,
+            Self::SchemaInvalid { .. } => "schema",
+        }
+    }
+
+    pub fn path(&self) -> Option<&str> {
+        match self {
+            Self::MissingRequiredField { field }
+            | Self::WrongFieldType { field }
+            | Self::UnknownEnum { field } => Some(field),
+            Self::SchemaViolation { path, .. } => Some(path),
+            Self::InvalidJson
+            | Self::OversizedArgument
+            | Self::UnknownTool
+            | Self::SchemaInvalid { .. } => None,
+        }
+    }
+
+    pub fn is_argument_validation(&self) -> bool {
+        !matches!(self, Self::UnknownTool)
     }
 }
 

@@ -1,6 +1,7 @@
 use aifluxon_core::{
     PreparedToolCall, ToolDescriptor, ToolValidationError, MAX_TOOL_ARGUMENT_BYTES,
 };
+use jsonschema::error::ValidationErrorKind;
 use serde_json::{json, Value};
 
 pub fn parse_tool_arguments(raw: &str) -> Result<Value, ToolValidationError> {
@@ -19,37 +20,11 @@ pub fn validate_tool_arguments(
     arguments: &Value,
 ) -> Result<(), ToolValidationError> {
     if !arguments.is_object() {
-        return Err(ToolValidationError::SchemaInvalid {
+        return Err(ToolValidationError::SchemaViolation {
+            kind: "type".to_string(),
+            path: String::new(),
             message: "Tool arguments must be a JSON object.".to_string(),
         });
-    }
-    if let Some(required) = schema.get("required").and_then(Value::as_array) {
-        for field in required.iter().filter_map(Value::as_str) {
-            if arguments.get(field).is_none() {
-                return Err(ToolValidationError::MissingRequiredField {
-                    field: field.to_string(),
-                });
-            }
-        }
-    }
-    if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
-        for (field, property) in properties {
-            let Some(value) = arguments.get(field) else {
-                continue;
-            };
-            if let Some(allowed) = property.get("enum").and_then(Value::as_array) {
-                if !allowed.iter().any(|candidate| candidate == value) {
-                    return Err(ToolValidationError::UnknownEnum {
-                        field: field.clone(),
-                    });
-                }
-            }
-            if !json_type_matches(property.get("type"), value) {
-                return Err(ToolValidationError::WrongFieldType {
-                    field: field.clone(),
-                });
-            }
-        }
     }
     let mut relaxed = schema.clone();
     if let Some(object) = relaxed.as_object_mut() {
@@ -57,15 +32,52 @@ pub fn validate_tool_arguments(
         object.entry("type").or_insert_with(|| json!("object"));
     }
     match jsonschema::validator_for(&relaxed) {
-        Ok(validator) => {
-            validator
-                .validate(arguments)
-                .map_err(|error| ToolValidationError::SchemaInvalid {
-                    message: error.to_string(),
-                })
-        }
+        Ok(validator) => validator
+            .iter_errors(arguments)
+            .next()
+            .map(schema_violation)
+            .map_or(Ok(()), Err),
         Err(_) => Ok(()),
     }
+}
+
+fn schema_violation(error: jsonschema::ValidationError<'_>) -> ToolValidationError {
+    let mut path = error.instance_path().as_str().to_string();
+    let kind = match error.kind() {
+        ValidationErrorKind::Required { property } => {
+            if let Some(property) = property.as_str() {
+                path.push('/');
+                path.push_str(&escape_json_pointer_segment(property));
+            }
+            "required"
+        }
+        ValidationErrorKind::Type { .. } => "type",
+        ValidationErrorKind::Enum { .. } => "enum",
+        ValidationErrorKind::AdditionalProperties { .. }
+        | ValidationErrorKind::UnevaluatedProperties { .. } => "additional_properties",
+        ValidationErrorKind::MinLength { .. } => "min_length",
+        ValidationErrorKind::MaxLength { .. } => "max_length",
+        ValidationErrorKind::Minimum { .. } | ValidationErrorKind::ExclusiveMinimum { .. } => {
+            "minimum"
+        }
+        ValidationErrorKind::Maximum { .. } | ValidationErrorKind::ExclusiveMaximum { .. } => {
+            "maximum"
+        }
+        ValidationErrorKind::MinItems { .. } => "min_items",
+        ValidationErrorKind::MaxItems { .. } => "max_items",
+        ValidationErrorKind::Pattern { .. } => "pattern",
+        ValidationErrorKind::Format { .. } => "format",
+        _ => "schema",
+    };
+    ToolValidationError::SchemaViolation {
+        kind: kind.to_string(),
+        path,
+        message: error.to_string(),
+    }
+}
+
+fn escape_json_pointer_segment(segment: &str) -> String {
+    segment.replace('~', "~0").replace('/', "~1")
 }
 
 pub fn prepare_tool_call(
@@ -79,33 +91,6 @@ pub fn prepare_tool_call(
         arguments,
         effect: descriptor.effect,
     })
-}
-
-fn json_type_matches(expected: Option<&Value>, value: &Value) -> bool {
-    let Some(expected) = expected else {
-        return true;
-    };
-    match expected {
-        Value::String(kind) => json_kind_matches(kind, value),
-        Value::Array(kinds) => kinds.iter().any(|kind| {
-            kind.as_str()
-                .is_some_and(|kind| json_kind_matches(kind, value))
-        }),
-        _ => true,
-    }
-}
-
-fn json_kind_matches(kind: &str, value: &Value) -> bool {
-    match kind {
-        "object" => value.is_object(),
-        "array" => value.is_array(),
-        "string" => value.is_string(),
-        "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
-        "number" => value.is_number(),
-        "boolean" => value.is_boolean(),
-        "null" => value.is_null(),
-        _ => true,
-    }
 }
 
 #[cfg(test)]
@@ -138,24 +123,16 @@ mod tests {
             prepare_tool_call(&descriptor, "{").unwrap_err(),
             ToolValidationError::InvalidJson
         );
-        assert_eq!(
-            prepare_tool_call(&descriptor, r#"{"mode":"brief"}"#).unwrap_err(),
-            ToolValidationError::MissingRequiredField {
-                field: "key".to_string()
-            }
-        );
-        assert_eq!(
-            prepare_tool_call(&descriptor, r#"{"key":1}"#).unwrap_err(),
-            ToolValidationError::WrongFieldType {
-                field: "key".to_string()
-            }
-        );
-        assert_eq!(
-            prepare_tool_call(&descriptor, r#"{"key":"a","mode":"other"}"#).unwrap_err(),
-            ToolValidationError::UnknownEnum {
-                field: "mode".to_string()
-            }
-        );
+        let missing = prepare_tool_call(&descriptor, r#"{"mode":"brief"}"#).unwrap_err();
+        assert_eq!(missing.kind(), "required");
+        assert_eq!(missing.path(), Some("/key"));
+        let wrong_type = prepare_tool_call(&descriptor, r#"{"key":1}"#).unwrap_err();
+        assert_eq!(wrong_type.kind(), "type");
+        assert_eq!(wrong_type.path(), Some("/key"));
+        let unknown_enum =
+            prepare_tool_call(&descriptor, r#"{"key":"a","mode":"other"}"#).unwrap_err();
+        assert_eq!(unknown_enum.kind(), "enum");
+        assert_eq!(unknown_enum.path(), Some("/mode"));
         assert_eq!(
             prepare_tool_call(&descriptor, &"x".repeat(MAX_TOOL_ARGUMENT_BYTES + 1)).unwrap_err(),
             ToolValidationError::OversizedArgument
@@ -183,5 +160,33 @@ mod tests {
             prepare_tool_call(&descriptor, "").unwrap().arguments,
             json!({})
         );
+    }
+
+    #[test]
+    fn nested_schema_errors_keep_the_exact_json_pointer_path() {
+        let mut descriptor = descriptor(ToolEffect::PureRead);
+        descriptor.input_schema = json!({
+            "type": "object",
+            "properties": {
+                "edits": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": { "summary": { "type": "string" } },
+                        "required": ["summary"]
+                    }
+                }
+            },
+            "required": ["edits"]
+        });
+
+        let wrong_type =
+            prepare_tool_call(&descriptor, r#"{"edits":[{"summary":null}]}"#).unwrap_err();
+        assert_eq!(wrong_type.kind(), "type");
+        assert_eq!(wrong_type.path(), Some("/edits/0/summary"));
+
+        let missing = prepare_tool_call(&descriptor, r#"{"edits":[{}]}"#).unwrap_err();
+        assert_eq!(missing.kind(), "required");
+        assert_eq!(missing.path(), Some("/edits/0/summary"));
     }
 }

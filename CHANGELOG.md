@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Tool argument schema failures now return retryable structured tool results with JSON Pointer paths instead of failing the entire run.
+
 ## 0.2.0
 
 - Added ordered multimodal Python prompts with public URL, provider file ID, bytes, data URL, and local-file image sources.
