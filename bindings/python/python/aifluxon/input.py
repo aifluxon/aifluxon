@@ -11,6 +11,22 @@ from urllib.parse import urlparse
 
 from .errors import InvalidRequestError
 
+_IMAGE_MIME_TYPES_BY_SUFFIX = {
+    ".avif": "image/avif",
+    ".bmp": "image/bmp",
+    ".gif": "image/gif",
+    ".heic": "image/heic",
+    ".heif": "image/heif",
+    ".ico": "image/vnd.microsoft.icon",
+    ".jpeg": "image/jpeg",
+    ".jpg": "image/jpeg",
+    ".png": "image/png",
+    ".svg": "image/svg+xml",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
+    ".webp": "image/webp",
+}
+
 
 @dataclass(frozen=True, slots=True)
 class ImageInput:
@@ -92,7 +108,7 @@ class ImageInput:
         """Read a local image and encode it as a provider-ready data URL."""
 
         image_path = Path(path)
-        resolved_mime = mime_type or mimetypes.guess_type(image_path.name)[0]
+        resolved_mime = mime_type or _infer_image_mime_type(image_path)
         if resolved_mime is None:
             raise _invalid_request(
                 "Could not infer the image MIME type; pass mime_type explicitly."
@@ -151,6 +167,13 @@ def _normalize_image_mime_type(value: Any) -> str:
     if not mime_type.startswith("image/"):
         raise _invalid_request("Image MIME type must start with `image/`.")
     return mime_type
+
+
+def _infer_image_mime_type(path: Path) -> str | None:
+    known_image_mime = _IMAGE_MIME_TYPES_BY_SUFFIX.get(path.suffix.lower())
+    if known_image_mime is not None:
+        return known_image_mime
+    return mimetypes.guess_type(path.name)[0]
 
 
 def _invalid_request(message: str) -> InvalidRequestError:

@@ -546,7 +546,7 @@ async fn openai_normal_answer_without_tools_does_not_continue() {
 }
 
 #[tokio::test]
-async fn deepseek_promised_tool_text_does_not_continue() {
+async fn deepseek_promised_tool_text_continues() {
     let turn = next_turn_for(
         ApiFamily::DeepSeek,
         OpenAiApiMode::ChatCompletions,
@@ -554,7 +554,10 @@ async fn deepseek_promised_tool_text_does_not_continue() {
         request_with("deepseek-chat", Default::default()),
     )
     .await;
-    assert_eq!(turn.terminal, ProviderTerminal::Stop);
+    assert_eq!(
+        turn.terminal,
+        ProviderTerminal::Continue(ContinuationReason::Incomplete)
+    );
 }
 
 #[tokio::test]
