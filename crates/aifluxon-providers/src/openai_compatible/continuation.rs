@@ -45,10 +45,26 @@ pub fn promised_tool_work_without_call(content: &str) -> bool {
         "读取",
         "查看",
         "检查",
+        "确认",
         "定位",
         "运行",
         "验证",
         "了解",
+        "解压",
+        "打开",
+        "安装",
+        "更新",
+        "替换",
+        "复制",
+        "移动",
+        "删除",
+        "写入",
+        "修改",
+        "构建",
+        "编译",
+        "提交",
+        "下载",
+        "获取",
         "执行命令",
         "用 shell",
         "使用 shell",
@@ -68,6 +84,20 @@ pub fn promised_tool_work_without_call(content: &str) -> bool {
                 return true;
             }
         }
+    }
+
+    let clauses = tool_intent_clauses(text);
+    if clauses
+        .iter()
+        .any(|clause| chinese_sequenced_clause_promises_tool_work(clause, &tool_action_markers))
+    {
+        return true;
+    }
+    if clauses.windows(2).any(|pair| {
+        chinese_clause_reports_progress(pair[0])
+            && chinese_direct_action_clause_promises_tool_work(pair[1], &tool_action_markers)
+    }) {
+        return true;
     }
 
     let bare_preamble = [
@@ -93,6 +123,74 @@ pub fn promised_tool_work_without_call(content: &str) -> bool {
     .any(|marker| text.starts_with(marker));
     bare_preamble
         && chinese_clause_promises_tool_work(prospective_tool_clause(text), &tool_action_markers)
+}
+
+fn tool_intent_clauses(text: &str) -> Vec<&str> {
+    text.split(is_tool_clause_boundary)
+        .map(str::trim)
+        .filter(|clause| !clause.is_empty())
+        .collect()
+}
+
+fn chinese_sequenced_clause_promises_tool_work(clause: &str, action_markers: &[&str]) -> bool {
+    const SEQUENCE_PREFIXES: [&str; 13] = [
+        "接下来我会",
+        "接下来我",
+        "接下来",
+        "下一步",
+        "然后",
+        "随后",
+        "接着",
+        "现在",
+        "继续",
+        "直接",
+        "最后",
+        "先",
+        "再",
+    ];
+    let Some(action_clause) = SEQUENCE_PREFIXES
+        .iter()
+        .find_map(|prefix| clause.strip_prefix(prefix).map(str::trim_start))
+    else {
+        return false;
+    };
+    chinese_clause_promises_tool_work(action_clause, action_markers)
+}
+
+fn chinese_clause_reports_progress(clause: &str) -> bool {
+    [
+        "已完成",
+        "已确认",
+        "已找到",
+        "已读取",
+        "已查看",
+        "已检查",
+        "已定位",
+        "已运行",
+        "已验证",
+        "已解压",
+        "成功",
+        "完成",
+        "通过",
+        "失败",
+    ]
+    .iter()
+    .any(|marker| clause.contains(marker))
+}
+
+fn chinese_direct_action_clause_promises_tool_work(clause: &str, action_markers: &[&str]) -> bool {
+    const DIRECT_ACTIONS: [&str; 25] = [
+        "查找", "搜索", "读取", "查看", "检查", "确认", "定位", "运行", "验证", "了解", "解压",
+        "打开", "安装", "更新", "替换", "复制", "移动", "删除", "写入", "修改", "构建", "编译",
+        "提交", "下载", "获取",
+    ];
+    let starts_with_action = DIRECT_ACTIONS.iter().any(|action| {
+        clause.starts_with(action)
+            && !["方法", "方式", "结果", "原因", "说明", "建议"]
+                .iter()
+                .any(|noun| clause.starts_with(&format!("{action}{noun}")))
+    });
+    starts_with_action && chinese_clause_promises_tool_work(clause, action_markers)
 }
 
 fn intent_is_in_opening_clause(text: &str, intent_index: usize) -> bool {
@@ -185,6 +283,13 @@ fn english_clause_promises_tool_work(clause: &str) -> bool {
 }
 
 fn chinese_clause_promises_tool_work(clause: &str, action_markers: &[&str]) -> bool {
+    if clause.contains("即可")
+        || ["请", "你可以", "用户可以"]
+            .iter()
+            .any(|prefix| clause.starts_with(prefix))
+    {
+        return false;
+    }
     if [
         "不需要",
         "无需",
@@ -245,6 +350,15 @@ fn chinese_clause_promises_tool_work(clause: &str, action_markers: &[&str]) -> b
         "schema",
         "字段",
         "帮助",
+        "压缩包",
+        "包内容",
+        "内容",
+        "大小",
+        "版本",
+        "状态",
+        "结构",
+        "文档",
+        "安装目录",
     ]
     .iter()
     .any(|target| clause.contains(target));
@@ -302,6 +416,15 @@ mod tests {
         assert!(promised_tool_work_without_call(
             "好的。我先了解 v2.2 的迁移方式与 IR 2.2 新字段（面部表演、对话耦合），再执行升级并加台词。先查看迁移帮助和 schema："
         ));
+        assert!(promised_tool_work_without_call(
+            "收到，继续升级到 v3.0.0。先确认目标压缩包存在并查看大小。"
+        ));
+        assert!(promised_tool_work_without_call(
+            "包已确认存在（201 KB，比旧版小很多，可能结构有变化）。解压到工作区临时目录并检查内容。"
+        ));
+        assert!(promised_tool_work_without_call(
+            "解压成功，结构已有变化。现在确认版本与改动内容。"
+        ));
         assert!(!promised_tool_work_without_call(
             "检查结果：语法检查通过，程序启动成功。"
         ));
@@ -310,6 +433,18 @@ mod tests {
         ));
         assert!(!promised_tool_work_without_call(
             "I will not run commands; I can answer directly."
+        ));
+        assert!(!promised_tool_work_without_call(
+            "包已确认存在。解压方法是使用 Expand-Archive。"
+        ));
+        assert!(!promised_tool_work_without_call(
+            "升级完成。检查结果：所有测试均已通过。"
+        ));
+        assert!(!promised_tool_work_without_call(
+            "构建完成。打开文件即可查看结果。"
+        ));
+        assert!(!promised_tool_work_without_call(
+            "检查已完成。你可以打开日志查看结果。"
         ));
     }
 
