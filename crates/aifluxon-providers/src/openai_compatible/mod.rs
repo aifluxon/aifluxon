@@ -570,12 +570,6 @@ fn validate_deepseek_image_request(
     if images.is_empty() {
         return Ok(());
     }
-    if !crate::deepseek::supports_image_input(&request.model) {
-        return Err(ProviderError::message(format!(
-            "DeepSeek model `{}` does not support image input; use deepseek-v4-flash-vision-exp.",
-            request.model
-        )));
-    }
     if images.len() > DEEPSEEK_MAX_IMAGE_COUNT {
         return Err(ProviderError::message(format!(
             "DeepSeek vision accepts at most {DEEPSEEK_MAX_IMAGE_COUNT} images per request."

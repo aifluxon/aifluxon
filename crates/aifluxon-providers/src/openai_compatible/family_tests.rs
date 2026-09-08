@@ -154,22 +154,33 @@ fn deepseek_vision_serializes_chat_responses_and_tool_output_images() {
 }
 
 #[test]
-fn deepseek_vision_validation_rejects_wrong_models_roles_and_sources() {
+fn deepseek_vision_validation_defers_model_support_to_provider() {
     let config = config(ApiFamily::DeepSeek, OpenAiApiMode::Responses);
-    let mut wrong_model = request_with("deepseek-v4-flash", Default::default());
-    add_image(
-        &mut wrong_model,
-        MessageRole::User,
-        "data:image/png;base64,iVBORw0KGgo=",
-        "image/png",
-    );
-    assert!(
-        validate_deepseek_image_request(&config, OpenAiApiMode::Responses, &wrong_model)
-            .unwrap_err()
-            .message
-            .contains("does not support image input")
-    );
+    for model in ["deepseek-v4-flash", "deepseek-v4-pro", "custom-model-alias"] {
+        let mut request = request_with(model, Default::default());
+        add_image(
+            &mut request,
+            MessageRole::User,
+            "data:image/png;base64,iVBORw0KGgo=",
+            "image/png",
+        );
+        for mode in [OpenAiApiMode::ChatCompletions, OpenAiApiMode::Responses] {
+            assert!(validate_deepseek_image_request(&config, mode, &request).is_ok());
+        }
+        assert_eq!(
+            build_chat_completions_body(&request)["messages"][1]["content"][1]["type"],
+            "image_url"
+        );
+        assert_eq!(
+            build_responses_body(&request)["input"][1]["content"][1]["type"],
+            "input_image"
+        );
+    }
+}
 
+#[test]
+fn deepseek_vision_validation_rejects_wrong_roles_and_sources() {
+    let config = config(ApiFamily::DeepSeek, OpenAiApiMode::Responses);
     let mut wrong_role = request_with("deepseek-v4-flash-vision-exp", Default::default());
     add_image(
         &mut wrong_role,
