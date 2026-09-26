@@ -17,8 +17,9 @@ pub mod tool_deltas;
 pub use chatgpt_web::chatgpt_web_capabilities;
 pub use common::{
     build_http_client, is_transient_reqwest_error, retry_backoff, sanitize_provider_error,
-    send_with_retry, DeltaMode, HttpClientTuning, HttpTransport, IncrementalSseParser, SseEvent,
-    TextDeltaReconciler, TransportFailure, TransportFailureKind, Utf8ChunkDecoder,
+    send_http_request, send_with_retry, DeltaMode, HttpClientTuning, HttpRetryPolicy,
+    HttpTransport, IncrementalSseParser, SseEvent, TextDeltaReconciler, TransportFailure,
+    TransportFailureKind, Utf8ChunkDecoder,
 };
 pub use deepseek_web::deepseek_web_capabilities;
 pub use openai::{descriptor_from_openai_tool, schema_from_openai_tools};

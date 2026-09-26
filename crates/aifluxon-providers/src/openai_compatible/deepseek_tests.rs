@@ -49,28 +49,28 @@ fn deepseek_repeated_tool_metadata_and_unicode_arguments_are_lossless() {
 #[test]
 fn deepseek_never_dispatches_truncated_or_malformed_tool_calls() {
     for (source, code) in [
-        (tool("{}"), "DEEPSEEK_STREAM_CLOSED"),
+        (tool("{}"), "PROVIDER_STREAM_CLOSED"),
         (
             tool("{}") + finish("tool_calls").trim_end(),
-            "DEEPSEEK_STREAM_CLOSED",
+            "PROVIDER_STREAM_CLOSED",
         ),
-        (tool("{}") + "data: [DONE]\n\n", "DEEPSEEK_STREAM_CLOSED"),
+        (tool("{}") + "data: [DONE]\n\n", "PROVIDER_STREAM_CLOSED"),
         (
             tool("{\"path\":") + &finish("tool_calls"),
-            "DEEPSEEK_INVALID_TOOL_CALL",
+            "PROVIDER_INVALID_TOOL_CALL",
         ),
-        (tool("{}") + &finish("length"), "DEEPSEEK_OUTPUT_LIMIT"),
+        (tool("{}") + &finish("length"), "PROVIDER_OUTPUT_LIMIT"),
         (
             tool("{}") + &finish("content_filter"),
-            "DEEPSEEK_FINISH_ERROR",
+            "PROVIDER_FINISH_ERROR",
         ),
         (
             "data: {bad}\n\n".to_string() + &finish("stop"),
-            "DEEPSEEK_MALFORMED_RESPONSE",
+            "PROVIDER_MALFORMED_RESPONSE",
         ),
         (
             "data: {\"error\":{\"message\":\"secret upstream detail\"}}\n\n".to_string(),
-            "DEEPSEEK_FINISH_ERROR",
+            "PROVIDER_FINISH_ERROR",
         ),
     ] {
         let error = decode(&source).unwrap_err();
@@ -85,7 +85,7 @@ fn deepseek_requires_an_answer_after_reasoning_and_preserves_trailing_usage() {
     assert!(decode(&(reasoning.clone() + &finish("stop")))
         .unwrap_err()
         .message
-        .starts_with("DEEPSEEK_EMPTY_RESPONSE"));
+        .starts_with("PROVIDER_EMPTY_RESPONSE"));
     let source = reasoning
         + &tool("{}")
         + &event(json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}))
@@ -126,6 +126,7 @@ impl OpenAiTransport for ScriptedTransport {
         };
         Ok((
             OpenAiStreamHead {
+                retry_after: None,
                 status: 200,
                 content_type: Some("text/event-stream".into()),
             },
@@ -291,7 +292,7 @@ fn deepseek_responses_accepts_tool_after_reasoning_but_rejects_incomplete_argume
             assert!(result
                 .unwrap_err()
                 .message
-                .starts_with("DEEPSEEK_INVALID_TOOL_CALL"));
+                .starts_with("PROVIDER_INVALID_TOOL_CALL"));
         }
     }
 }

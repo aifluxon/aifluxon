@@ -685,12 +685,11 @@ impl ResponsesTurnAssembler {
         Ok(())
     }
 
-    pub(crate) fn finish_deepseek(self) -> Result<ModelTurn, ProviderError> {
+    pub fn finish_checked(self) -> Result<ModelTurn, ProviderError> {
         if self.state.terminal == Some(ResponsesTerminalStatus::Completed) {
             self.state.tools.validate()?;
         }
         let turn = self.finish()?;
-        crate::deepseek::validate_turn(&turn)?;
         Ok(turn)
     }
 
@@ -703,7 +702,7 @@ impl ResponsesTurnAssembler {
                     .incomplete_reason
                     .unwrap_or_else(|| "incomplete".to_string());
                 return Err(ProviderError::message(format!(
-                    "Responses stream ended incomplete: {reason}"
+                    "PROVIDER_OUTPUT_INCOMPLETE: Responses stream ended incomplete: {reason}"
                 )));
             }
             Some(ResponsesTerminalStatus::Failed) => {
@@ -713,7 +712,7 @@ impl ResponsesTurnAssembler {
             }
             None => {
                 return Err(ProviderError::message(
-                    "Responses stream ended without an explicit terminal event.",
+                    "PROVIDER_STREAM_CLOSED: Responses stream ended without an explicit terminal event.",
                 ));
             }
         }
@@ -1006,6 +1005,13 @@ fn terminal_snapshot(value: &Value) -> Option<&Value> {
 }
 
 fn terminal_status(value: &Value) -> Option<ResponsesTerminalStatus> {
+    // Failed/incomplete payloads cannot be promoted by a success event label.
+    let response = value.get("response").unwrap_or(value);
+    match response.get("status").and_then(Value::as_str) {
+        Some("incomplete") => return Some(ResponsesTerminalStatus::Incomplete),
+        Some("failed" | "cancelled") => return Some(ResponsesTerminalStatus::Failed),
+        _ => {}
+    }
     match value.get("type").and_then(Value::as_str) {
         Some("response.completed" | "response.done") => {
             return Some(ResponsesTerminalStatus::Completed)

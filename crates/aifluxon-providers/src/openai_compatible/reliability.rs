@@ -32,6 +32,9 @@ impl ModelEventSink for AttemptSink {
     }
 
     fn on_reasoning_delta(&self, delta: &str) {
+        if !delta.is_empty() {
+            self.visible.store(true, Ordering::Relaxed);
+        }
         self.inner.on_reasoning_delta(delta);
     }
 
@@ -42,12 +45,12 @@ impl ModelEventSink for AttemptSink {
 
 pub(crate) fn retryable_error(error: &ProviderError) -> bool {
     [
-        "DEEPSEEK_STREAM_CLOSED:",
-        "DEEPSEEK_INVALID_TOOL_CALL:",
-        "DEEPSEEK_EMPTY_RESPONSE:",
-        "DEEPSEEK_MALFORMED_RESPONSE:",
-        "DEEPSEEK_RESOURCE_UNAVAILABLE:",
-        "DEEPSEEK_TRANSIENT_HTTP:",
+        "PROVIDER_STREAM_CLOSED:",
+        "PROVIDER_INVALID_TOOL_CALL:",
+        "PROVIDER_EMPTY_RESPONSE:",
+        "PROVIDER_MALFORMED_RESPONSE:",
+        "PROVIDER_RESOURCE_UNAVAILABLE:",
+        "PROVIDER_TRANSIENT_HTTP:",
         "PROVIDER_TRANSIENT_TRANSPORT:",
     ]
     .iter()
@@ -55,14 +58,23 @@ pub(crate) fn retryable_error(error: &ProviderError) -> bool {
 }
 
 pub(crate) fn validate_turn(turn: &ModelTurn) -> Result<(), ProviderError> {
-    if turn.tool_calls.is_empty() && turn.text.trim().is_empty() {
+    let has_artifact = turn
+        .opaque
+        .get("generated_images")
+        .and_then(Value::as_array)
+        .is_some_and(|images| !images.is_empty());
+    if turn.tool_calls.is_empty()
+        && turn.text.trim().is_empty()
+        && !has_artifact
+        && turn.terminal.continuation_reason().is_none()
+    {
         return Err(ProviderError::message(
-            "DEEPSEEK_EMPTY_RESPONSE: Provider returned no answer or executable tool calls.",
+            "PROVIDER_EMPTY_RESPONSE: Provider returned no answer or executable tool calls.",
         ));
     }
     if turn.terminal == ProviderTerminal::ToolCalls && turn.tool_calls.is_empty() {
         return Err(ProviderError::message(
-            "DEEPSEEK_INVALID_TOOL_CALL: Provider ended in tool mode without a tool call.",
+            "PROVIDER_INVALID_TOOL_CALL: Provider ended in tool mode without a tool call.",
         ));
     }
     let mut ids = std::collections::HashSet::new();
@@ -75,8 +87,21 @@ pub(crate) fn validate_turn(turn: &ModelTurn) -> Result<(), ProviderError> {
                 .is_none_or(|id| id.trim().is_empty() || !ids.insert(id))
     }) {
         return Err(ProviderError::message(
-            "DEEPSEEK_INVALID_TOOL_CALL: Tool identity or JSON arguments are incomplete; no tools were dispatched.",
+            "PROVIDER_INVALID_TOOL_CALL: Tool identity or JSON arguments are incomplete; no tools were dispatched.",
         ));
     }
     Ok(())
+}
+
+pub(super) struct TurnAttemptError {
+    pub error: ProviderError,
+    pub retry_after: Option<std::time::Duration>,
+}
+impl From<ProviderError> for TurnAttemptError {
+    fn from(error: ProviderError) -> Self {
+        Self {
+            error,
+            retry_after: None,
+        }
+    }
 }

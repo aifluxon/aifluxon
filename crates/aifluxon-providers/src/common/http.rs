@@ -100,7 +100,128 @@ pub async fn send_with_retry<T: HttpTransport>(transport: &T) -> Result<Value, T
 }
 
 pub fn retry_backoff(attempt: u8) -> Duration {
-    Duration::from_millis(300 * u64::from(attempt.max(1)))
+    let base = 300 * (1_u64 << attempt.saturating_sub(1).min(5));
+    let jitter = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos() as u64
+        % 101;
+    Duration::from_millis(base + jitter)
+}
+
+pub fn is_retryable_http_status(status: u16) -> bool {
+    matches!(status, 408 | 429 | 500 | 502 | 503 | 504)
+}
+
+pub fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    let seconds = headers
+        .get("retry-after-ms")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<f64>().ok())
+        .map(|ms| ms / 1000.0)
+        .or_else(|| {
+            headers
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| {
+                    value.parse::<f64>().ok().or_else(|| {
+                        httpdate::parse_http_date(value).ok().map(|date| {
+                            date.duration_since(std::time::SystemTime::now())
+                                .unwrap_or_default()
+                                .as_secs_f64()
+                        })
+                    })
+                })
+        })?;
+    // Preserve excessive server delays as a no-retry signal, including overflow.
+    if seconds > 60.0 {
+        return Some(Duration::from_secs(61));
+    }
+    Duration::try_from_secs_f64(seconds).ok()
+}
+
+/// Replay only requests whose remote effects may safely be repeated. Stateful
+/// operations may retry connection setup failures, before a request was sent.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HttpRetryPolicy {
+    Replayable,
+    ConnectOnly,
+}
+
+pub fn generation_retry_policy(body: &Value) -> HttpRetryPolicy {
+    let has_hosted_work = body
+        .get("tools")
+        .and_then(Value::as_array)
+        .is_some_and(|tools| {
+            tools
+                .iter()
+                .any(|tool| tool.get("type").and_then(Value::as_str) != Some("function"))
+        });
+    if has_hosted_work {
+        HttpRetryPolicy::ConnectOnly
+    } else {
+        HttpRetryPolicy::Replayable
+    }
+}
+
+pub async fn send_http_request(
+    context: &str,
+    request: reqwest::RequestBuilder,
+    secrets: &[&str],
+    policy: HttpRetryPolicy,
+) -> Result<reqwest::Response, String> {
+    let mut request = request;
+    for attempt in 1..=MAX_HTTP_ATTEMPTS {
+        let next = request.try_clone();
+        let result = request.send().await;
+        let (retryable, hint) = match &result {
+            Ok(response) => (
+                policy == HttpRetryPolicy::Replayable
+                    && is_retryable_http_status(response.status().as_u16()),
+                retry_after(response.headers()),
+            ),
+            Err(error) => (
+                match policy {
+                    HttpRetryPolicy::Replayable => is_transient_reqwest_error(error),
+                    HttpRetryPolicy::ConnectOnly => error.is_connect(),
+                },
+                None,
+            ),
+        };
+        let delay = hint.unwrap_or_else(|| retry_backoff(attempt));
+        if !retryable
+            || attempt == MAX_HTTP_ATTEMPTS
+            || next.is_none()
+            || delay > Duration::from_secs(60)
+        {
+            return result.map_err(|error| {
+                sanitize_provider_error(
+                    format!(
+                        "{context}: Provider request failed after {attempt} attempt(s): {error}"
+                    ),
+                    secrets,
+                )
+            });
+        }
+        tracing::warn!(
+            category = "agent",
+            component = "agent.http",
+            event_code = "PROVIDER_HTTP_RETRY",
+            context,
+            attempt,
+            status = result
+                .as_ref()
+                .ok()
+                .map(|response| response.status().as_u16()),
+            delay_ms = delay.as_millis() as u64,
+            outcome = "retrying",
+            "Retrying provider HTTP request"
+        );
+        drop(result);
+        tokio::time::sleep(delay).await;
+        request = next.expect("clone checked above");
+    }
+    unreachable!("bounded attempts return")
 }
 
 pub fn sanitize_provider_error(message: impl Into<String>, secrets: &[&str]) -> String {
@@ -123,6 +244,74 @@ mod tests {
     use super::*;
     use std::collections::VecDeque;
     use std::sync::Mutex;
+
+    #[test]
+    fn retry_after_and_hosted_request_policy() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("retry-after", "1.5".parse().unwrap());
+        assert_eq!(retry_after(&headers), Some(Duration::from_millis(1500)));
+        headers.insert("retry-after-ms", "25".parse().unwrap());
+        assert_eq!(retry_after(&headers), Some(Duration::from_millis(25)));
+        headers.remove("retry-after-ms");
+        headers.insert("retry-after", "1e309".parse().unwrap());
+        assert_eq!(retry_after(&headers), Some(Duration::from_secs(61)));
+        headers.insert(
+            "retry-after",
+            httpdate::fmt_http_date(std::time::SystemTime::now() + Duration::from_secs(30))
+                .parse()
+                .unwrap(),
+        );
+        assert!((28..=30).contains(&retry_after(&headers).unwrap().as_secs()));
+        assert_eq!(
+            generation_retry_policy(&serde_json::json!({"tools":[{"type":"web_search"}]})),
+            HttpRetryPolicy::ConnectOnly
+        );
+        assert_eq!(
+            generation_retry_policy(&serde_json::json!({"tools":[{"type":"function"}]})),
+            HttpRetryPolicy::Replayable
+        );
+    }
+
+    #[tokio::test]
+    async fn http_status_retries_obey_replay_policy_and_server_delay() {
+        use std::io::{Read, Write};
+        for (statuses, policy, hint) in [
+            (vec![429, 200], HttpRetryPolicy::Replayable, "0"),
+            (vec![503, 503, 503], HttpRetryPolicy::Replayable, "0"),
+            (vec![503], HttpRetryPolicy::ConnectOnly, "0"),
+            (vec![429], HttpRetryPolicy::Replayable, "61"),
+            (vec![400], HttpRetryPolicy::Replayable, "0"),
+        ] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let url = format!("http://{}/", listener.local_addr().unwrap());
+            let expected = *statuses.last().unwrap();
+            let server = std::thread::spawn(move || {
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                for status in statuses {
+                    let mut socket = loop {
+                        if let Ok((socket, _)) = listener.accept() {
+                            break socket;
+                        }
+                        assert!(std::time::Instant::now() < deadline, "missing retry");
+                        std::thread::sleep(Duration::from_millis(1));
+                    };
+                    socket.set_nonblocking(false).unwrap();
+                    socket
+                        .set_read_timeout(Some(Duration::from_secs(1)))
+                        .unwrap();
+                    let mut buf = [0u8; 4096];
+                    assert!(socket.read(&mut buf).unwrap() > 0);
+                    write!(socket, "HTTP/1.1 {status} Test\r\nContent-Length: 0\r\nConnection: close\r\nRetry-After: {hint}\r\n\r\n").unwrap();
+                }
+            });
+            let response = send_http_request("test", reqwest::Client::new().get(url), &[], policy)
+                .await
+                .unwrap();
+            assert_eq!(response.status().as_u16(), expected);
+            server.join().unwrap();
+        }
+    }
 
     struct FakeTransport {
         cloneable: bool,
@@ -185,8 +374,8 @@ mod tests {
         assert_eq!(tuning.read_timeout, Duration::from_secs(180));
         assert_eq!(tuning.pool_idle_timeout, Duration::from_secs(90));
         assert!(build_http_client(tuning).is_ok());
-        assert_eq!(retry_backoff(1), Duration::from_millis(300));
-        assert_eq!(retry_backoff(2), Duration::from_millis(600));
+        assert!((300..=400).contains(&retry_backoff(1).as_millis()));
+        assert!((600..=700).contains(&retry_backoff(2).as_millis()));
 
         let secret = "secret-token";
         let sanitized =

@@ -5,6 +5,9 @@ mod decorate;
 mod deepseek_tests;
 #[cfg(test)]
 mod family_tests;
+mod reliability;
+#[cfg(test)]
+mod reliability_tests;
 mod responses;
 mod streaming;
 pub mod tools;
@@ -29,7 +32,7 @@ pub use decorate::effective_api_mode;
 pub use responses::{build_responses_body, ResponsesTurnAssembler};
 pub use streaming::{
     decode_chat_response, decode_chat_response_with, decode_responses_response,
-    decode_responses_response_with,
+    decode_responses_response_with, LiveStreamDecoder as OpenAiStreamDecoder,
 };
 pub use tools::descriptor_to_openai_tool;
 
@@ -159,6 +162,7 @@ pub struct OpenAiWireResponse {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OpenAiStreamHead {
+    pub retry_after: Option<Duration>,
     pub status: u16,
     pub content_type: Option<String>,
 }
@@ -182,6 +186,7 @@ pub trait OpenAiTransport: Send + Sync {
 
 fn buffered_body_stream(response: OpenAiWireResponse) -> (OpenAiStreamHead, OpenAiBodyStream) {
     let head = OpenAiStreamHead {
+        retry_after: None,
         status: response.status,
         content_type: response.content_type,
     };
@@ -207,6 +212,7 @@ async fn collect_openai_stream(
 
 async fn send_openai_reqwest(
     request: &OpenAiWireRequest,
+    retry_policy: Option<crate::common::HttpRetryPolicy>,
 ) -> Result<reqwest::Response, ProviderError> {
     // Credentials remain request headers. The shared pool contains no default authorization.
     static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
@@ -223,7 +229,18 @@ async fn send_openai_reqwest(
     for (name, value) in &request.extra_headers {
         builder = builder.header(name.as_str(), value.as_str());
     }
-    builder.json(&request.body).send().await.map_err(|error| {
+    let builder = builder.json(&request.body);
+    if let Some(policy) = retry_policy {
+        return crate::common::send_http_request(
+            "Provider generation",
+            builder,
+            &[&request.api_key],
+            policy,
+        )
+        .await
+        .map_err(ProviderError::message);
+    }
+    builder.send().await.map_err(|error| {
         ProviderError::message(crate::common::sanitize_provider_error(
             format!(
                 "{}: Provider request could not be sent: {error}",
@@ -254,8 +271,9 @@ impl OpenAiTransport for ReqwestOpenAiTransport {
         &self,
         request: OpenAiWireRequest,
     ) -> Result<(OpenAiStreamHead, OpenAiBodyStream), ProviderError> {
-        let response = send_openai_reqwest(&request).await?;
+        let response = send_openai_reqwest(&request, None).await?;
         let head = OpenAiStreamHead {
+            retry_after: crate::common::retry_after(response.headers()),
             status: response.status().as_u16(),
             content_type: response
                 .headers()
@@ -382,7 +400,11 @@ impl OpenAiCompatibleProvider {
                 session_key.unwrap_or(""),
                 turn_state,
             )?;
-            let response = send_openai_reqwest(&request).await?;
+            let response = send_openai_reqwest(
+                &request,
+                Some(crate::common::generation_retry_policy(&body)),
+            )
+            .await?;
             if response.status().as_u16() == 401
                 && !retried
                 && self.config.credential_source.supports_refresh()
@@ -421,20 +443,30 @@ impl OpenAiCompatibleProvider {
         session_key: &str,
         turn_state: Option<&str>,
         sink: Arc<dyn ModelEventSink>,
-    ) -> Result<(u16, String, Option<ModelTurn>), ProviderError> {
+    ) -> Result<(u16, String, Option<ModelTurn>, Option<Duration>), ProviderError> {
         let (head, mut chunks) = self
             .transport
             .stream(self.wire_request(mode, body, token, session_key, turn_state)?)
             .await?;
         if !(200..300).contains(&head.status) {
+            // These statuses need no response text. Do not wait for an error
+            // body's EOF before refreshing credentials or respecting backoff.
+            if head.status == 401 || crate::common::is_retryable_http_status(head.status) {
+                return Ok((head.status, String::new(), None, head.retry_after));
+            }
             let mut raw = Vec::new();
             while let Some(chunk) = chunks.next().await {
-                raw.extend(chunk?);
+                let chunk = chunk?;
+                raw.extend_from_slice(&chunk[..chunk.len().min(4096 - raw.len())]);
+                if raw.len() >= 4096 {
+                    break;
+                }
             }
             return Ok((
                 head.status,
                 String::from_utf8_lossy(&raw).into_owned(),
                 None,
+                head.retry_after,
             ));
         }
         let (sink, kimi_think) = self.wrap_family_sink(sink);
@@ -460,7 +492,7 @@ impl OpenAiCompatibleProvider {
         if self.config.family == ApiFamily::Qwen {
             crate::qwen::apply_summary_to_turn(&mut turn);
         }
-        Ok((head.status, String::new(), Some(turn)))
+        Ok((head.status, String::new(), Some(turn), head.retry_after))
     }
 
     async fn stream_turn_with_auth(
@@ -469,7 +501,7 @@ impl OpenAiCompatibleProvider {
         body: serde_json::Value,
         request: &ModelTurnRequest,
         sink: Arc<dyn ModelEventSink>,
-    ) -> Result<(u16, String, Option<ModelTurn>, String), ProviderError> {
+    ) -> Result<(u16, String, Option<ModelTurn>, String, Option<Duration>), ProviderError> {
         let turn_state = request
             .opaque_state
             .as_ref()
@@ -487,13 +519,19 @@ impl OpenAiCompatibleProvider {
                     turn_state,
                     sink.clone(),
                 )
-                .await?;
+                .await
+                .map_err(|error| {
+                    ProviderError::message(crate::common::sanitize_provider_error(
+                        error.message,
+                        &[&token],
+                    ))
+                })?;
             if streamed.0 == 401 && !retried && self.config.credential_source.supports_refresh() {
                 token = self.resolve_bearer(true).await?;
                 retried = true;
                 continue;
             }
-            return Ok((streamed.0, streamed.1, streamed.2, token));
+            return Ok((streamed.0, streamed.1, streamed.2, token, streamed.3));
         }
     }
 }
@@ -513,42 +551,55 @@ impl ModelProvider for OpenAiCompatibleProvider {
         request: ModelTurnRequest,
         sink: Arc<dyn ModelEventSink>,
     ) -> Result<ModelTurn, ProviderError> {
-        if self.config.family != ApiFamily::DeepSeek {
-            return self.next_turn_once(&request, sink).await;
-        }
         for attempt in 0..3 {
-            let attempt_sink = Arc::new(crate::deepseek::AttemptSink::new(sink.clone()));
-            match self.next_turn_once(&request, attempt_sink.clone()).await {
+            let attempt_sink = Arc::new(reliability::AttemptSink::new(sink.clone()));
+            let outcome = tokio::time::timeout(
+                Duration::from_secs(15 * 60),
+                self.next_turn_once(&request, attempt_sink.clone()),
+            )
+            .await
+            .unwrap_or_else(|_| {
+                Err(ProviderError::message(
+                    "PROVIDER_DEADLINE: Model attempt exceeded its time budget.",
+                )
+                .into())
+            });
+            match outcome {
                 Ok(turn) => return Ok(turn),
-                Err(error) => {
+                Err(failure) => {
+                    let error = failure.error;
+                    let delay = failure
+                        .retry_after
+                        .unwrap_or_else(|| crate::common::retry_backoff(attempt + 1));
                     // No tools dispatch until a validated ModelTurn reaches Runtime. Never
                     // replay visible partial answers or provider-hosted operations automatically.
                     let retry = attempt < 2
+                        && delay <= Duration::from_secs(60)
                         && !attempt_sink.has_visible_output()
                         && !request.features.web_search
                         && !request.features.image_generation
-                        && crate::deepseek::retryable_error(&error);
+                        && reliability::retryable_error(&error);
                     tracing::warn!(
                         category = "agent",
                         component = "agent.provider",
-                        event_code = "DEEPSEEK_MODEL_ATTEMPT_FAILED",
-                        provider = "deepseek",
+                        event_code = "PROVIDER_MODEL_ATTEMPT_FAILED",
+                        provider = self.config.provider_id.as_str(),
                         model = request.model.as_str(),
                         run_id = request.run_id.hyphenated().as_str(),
                         attempt = attempt + 1,
                         retry,
                         outcome = if retry { "retrying" } else { "failed" },
-                        error_code = if crate::deepseek::retryable_error(&error) {
-                            "DEEPSEEK_RECOVERABLE"
+                        error_code = if reliability::retryable_error(&error) {
+                            "PROVIDER_RECOVERABLE"
                         } else {
-                            "DEEPSEEK_RESPONSE_ERROR"
+                            "PROVIDER_RESPONSE_ERROR"
                         },
-                        "DeepSeek model attempt failed validation or transport"
+                        "Model attempt failed validation or transport"
                     );
                     if !retry {
                         return Err(error);
                     }
-                    tokio::time::sleep(Duration::from_millis(250 * (1 << attempt))).await;
+                    tokio::time::sleep(delay).await;
                 }
             }
         }
@@ -561,7 +612,7 @@ impl OpenAiCompatibleProvider {
         &self,
         request: &ModelTurnRequest,
         sink: Arc<dyn ModelEventSink>,
-    ) -> Result<ModelTurn, ProviderError> {
+    ) -> Result<ModelTurn, reliability::TurnAttemptError> {
         let mut request = std::borrow::Cow::Borrowed(request);
         let mode = decorate::effective_api_mode(&self.config, &request.model);
         validate_deepseek_image_request(&self.config, mode, &request)?;
@@ -598,33 +649,33 @@ impl OpenAiCompatibleProvider {
                 .stream_turn_with_auth(mode, fallback, &request, sink)
                 .await?;
         }
-        let (status, preview, turn, token) = streamed;
+        let (status, preview, turn, token, retry_after) = streamed;
         if !(200..300).contains(&status) {
-            if self.config.family == ApiFamily::DeepSeek
-                && matches!(status, 408 | 429 | 500 | 502 | 503 | 504)
-            {
-                return Err(ProviderError::message(format!(
-                    "DEEPSEEK_TRANSIENT_HTTP: Provider returned HTTP {status}."
-                )));
+            if crate::common::is_retryable_http_status(status) {
+                return Err(reliability::TurnAttemptError {
+                    error: ProviderError::message(format!(
+                        "PROVIDER_TRANSIENT_HTTP: Provider returned HTTP {status}."
+                    )),
+                    retry_after,
+                });
             }
-            return Err(ProviderError::message(
-                crate::common::sanitize_provider_error(
+            return Err(
+                ProviderError::message(crate::common::sanitize_provider_error(
                     format!("Provider returned HTTP {status}: {preview}"),
                     &[&token],
-                ),
-            ));
+                ))
+                .into(),
+            );
         }
         let mut turn = turn.ok_or_else(|| {
             ProviderError::message("Provider returned a success status without a model turn.")
         })?;
-        if self.config.family == ApiFamily::DeepSeek {
-            crate::deepseek::validate_turn(&turn)?;
-        }
         continuation::apply_turn_continuation(
             self.config.family,
             !request.tools.is_empty(),
             &mut turn,
         );
+        reliability::validate_turn(&turn)?;
         Ok(turn)
     }
 }
@@ -893,6 +944,7 @@ mod tests {
             });
             Ok((
                 OpenAiStreamHead {
+                    retry_after: None,
                     status: 200,
                     content_type: Some("text/event-stream".to_string()),
                 },
@@ -919,7 +971,7 @@ mod tests {
     async fn next_turn_emits_text_deltas_before_later_http_chunks_arrive() {
         let first = concat!(r#"data: {"choices":[{"delta":{"content":"Hel"}}]}"#, "\n\n");
         let second = concat!(
-            r#"data: {"choices":[{"delta":{"content":"lo"}}]}"#,
+            r#"data: {"choices":[{"delta":{"content":"lo"},"finish_reason":"stop"}]}"#,
             "\n\n",
             "data: [DONE]\n\n"
         );
@@ -965,7 +1017,7 @@ mod tests {
         let body = concat!(
             r#"data: {"choices":[{"delta":{"reasoning_content":"plan"}}]}"#,
             "\n\n",
-            r#"data: {"choices":[{"delta":{"content":"answer"}}]}"#,
+            r#"data: {"choices":[{"delta":{"content":"answer"},"finish_reason":"stop"}]}"#,
             "\n\n",
             "data: [DONE]\n\n"
         );

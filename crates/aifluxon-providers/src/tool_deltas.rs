@@ -46,7 +46,7 @@ impl ToolCallAssembler {
                     .is_ok_and(|arguments| arguments.is_object())
             {
                 return Err(aifluxon_core::ProviderError::message(
-                    "DEEPSEEK_INVALID_TOOL_CALL: Incomplete tool identity or JSON arguments; no tools were dispatched.",
+                    "PROVIDER_INVALID_TOOL_CALL: Incomplete tool identity or JSON arguments; no tools were dispatched.",
                 ));
             }
         }

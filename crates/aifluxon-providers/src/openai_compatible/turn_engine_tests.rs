@@ -197,10 +197,11 @@ fn chat_fixture_assembles_split_and_multiple_tool_calls() {
 }
 
 #[test]
-fn chat_malformed_chunk_is_skipped_without_losing_later_text() {
-    let (turn, _) = decode_chat(CHAT_MALFORMED_THEN_TEXT);
-    assert_eq!(turn.text, "ok");
-    assert_eq!(turn.terminal, ProviderTerminal::Stop);
+fn chat_malformed_chunk_is_rejected_before_later_text() {
+    let sink = Arc::new(RecordingSink::default());
+    let error = decode_chat_response(&sse(CHAT_MALFORMED_THEN_TEXT), sink.clone()).unwrap_err();
+    assert!(error.message.starts_with("PROVIDER_MALFORMED_RESPONSE:"));
+    assert!(sink.events.lock().unwrap().is_empty());
 }
 
 #[test]
@@ -327,9 +328,7 @@ fn responses_incomplete_and_cancelled_streams_do_not_fabricate_a_terminal() {
         Arc::new(aifluxon_core::NoopModelEventSink),
     )
     .expect_err("cancelled");
-    assert!(cancelled
-        .message
-        .contains("without an explicit terminal event"));
+    assert!(cancelled.message.starts_with("PROVIDER_STREAM_CLOSED:"));
 
     let malformed = decode_responses_response(
         &sse("data: {bad}\n\n"),
@@ -338,7 +337,7 @@ fn responses_incomplete_and_cancelled_streams_do_not_fabricate_a_terminal() {
     .expect_err("malformed");
     assert!(malformed
         .message
-        .contains("without an explicit terminal event"));
+        .starts_with("PROVIDER_MALFORMED_RESPONSE:"));
 }
 
 #[test]

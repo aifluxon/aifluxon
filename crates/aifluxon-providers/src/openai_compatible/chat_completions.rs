@@ -125,26 +125,26 @@ impl ChatCompletionsTurnAssembler {
         self.tools.use_metadata_snapshots();
     }
 
-    pub(crate) fn finish_deepseek(self) -> Result<ModelTurn, aifluxon_core::ProviderError> {
+    pub fn finish_checked(self) -> Result<ModelTurn, aifluxon_core::ProviderError> {
         use aifluxon_core::ProviderError;
         match self.finish_reason.as_deref() {
             Some("stop" | "tool_calls") => {}
             Some("length") => return Err(ProviderError::message(
-                "DEEPSEEK_OUTPUT_LIMIT: Output token limit reached; no tools from this truncated response were dispatched.",
+                "PROVIDER_OUTPUT_LIMIT: Output token limit reached; no tools from this truncated response were dispatched.",
             )),
             Some("insufficient_system_resource") => return Err(ProviderError::message(
-                "DEEPSEEK_RESOURCE_UNAVAILABLE: Provider could not complete this response.",
+                "PROVIDER_RESOURCE_UNAVAILABLE: Provider could not complete this response.",
             )),
             Some(_) => return Err(ProviderError::message(
-                "DEEPSEEK_FINISH_ERROR: Provider did not return a successful finish reason.",
+                "PROVIDER_FINISH_ERROR: Provider did not return a successful finish reason.",
             )),
             None => return Err(ProviderError::message(
-                "DEEPSEEK_STREAM_CLOSED: Response ended without a finish reason.",
+                "PROVIDER_STREAM_CLOSED: Response ended without a finish reason.",
             )),
         }
         self.tools.validate()?;
         let turn = self.finish();
-        crate::deepseek::validate_turn(&turn)?;
+        super::reliability::validate_turn(&turn)?;
         Ok(turn)
     }
 
@@ -197,7 +197,12 @@ impl ChatCompletionsTurnAssembler {
             }
         }
 
-        if let Some(content) = delta_value.get("content").and_then(Value::as_str) {
+        if let Some(content) = delta_value
+            .get("content")
+            .and_then(Value::as_str)
+            .filter(|content| !content.is_empty())
+            .or_else(|| delta_value.get("refusal").and_then(Value::as_str))
+        {
             if let Some(delta) =
                 self.text
                     .push_compatible(content, is_snapshot, self.allow_cumulative_delta)

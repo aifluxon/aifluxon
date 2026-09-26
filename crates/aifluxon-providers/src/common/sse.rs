@@ -75,7 +75,7 @@ fn next_event_boundary(buffer: &str) -> Option<usize> {
 fn parse_event_block(block: &str) -> Option<SseEvent> {
     let mut event = SseEvent::default();
     let mut saw_field = false;
-    for raw_line in block.split('\n') {
+    for raw_line in block.trim_start_matches('\u{feff}').split('\n') {
         let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
         if line.is_empty() || line.starts_with(':') {
             continue;
