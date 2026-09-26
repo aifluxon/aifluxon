@@ -685,6 +685,15 @@ impl ResponsesTurnAssembler {
         Ok(())
     }
 
+    pub(crate) fn finish_deepseek(self) -> Result<ModelTurn, ProviderError> {
+        if self.state.terminal == Some(ResponsesTerminalStatus::Completed) {
+            self.state.tools.validate()?;
+        }
+        let turn = self.finish()?;
+        crate::deepseek::validate_turn(&turn)?;
+        Ok(turn)
+    }
+
     pub fn finish(self) -> Result<ModelTurn, ProviderError> {
         match self.state.terminal {
             Some(ResponsesTerminalStatus::Completed) => {}

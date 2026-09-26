@@ -127,7 +127,9 @@ impl AgentCoordinator {
                     apply_continuation(&mut request, &turn, reason);
                     continue;
                 }
-                return Ok(turn);
+                return Err(ProviderError::message(
+                    "Model continuation limit reached before the task completed.",
+                ));
             }
             if turn.tool_calls.is_empty() || turn.terminal != ProviderTerminal::ToolCalls {
                 return Ok(turn);
@@ -178,7 +180,9 @@ impl AgentCoordinator {
                     apply_continuation(&mut request, &turn, reason);
                     continue;
                 }
-                return Ok(complete_without_tools(request.messages, turn));
+                return Err(ProviderError::message(
+                    "Model continuation limit reached before the task completed.",
+                ));
             }
             if turn.tool_calls.is_empty() || turn.terminal != ProviderTerminal::ToolCalls {
                 return Ok(complete_without_tools(request.messages, turn));

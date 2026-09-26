@@ -48,6 +48,9 @@ fn decorate_chat(body: &mut Value, config: &OpenAiCompatibleConfig, request: &Mo
             );
         }
         ApiFamily::DeepSeek => {
+            if let Some(limit) = deepseek::default_max_output_tokens(&request.model) {
+                body["max_tokens"] = json!(limit);
+            }
             if deepseek::supports_thinking_toggle(&request.model) {
                 let effort = deepseek::normalize_reasoning_effort(
                     &request.model,
@@ -94,7 +97,7 @@ fn replay_assistant_reasoning_content(body: &mut Value, request: &ModelTurnReque
         return;
     };
     for (wire, original) in messages.iter_mut().zip(request.messages.iter()) {
-        if original.role != MessageRole::Assistant {
+        if original.role != MessageRole::Assistant || original.tool_calls.is_empty() {
             continue;
         }
         if let Some(reasoning) = original
@@ -102,8 +105,7 @@ fn replay_assistant_reasoning_content(body: &mut Value, request: &ModelTurnReque
             .as_ref()
             .and_then(|state| state.get("reasoning_content"))
             .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
+            .filter(|value| !value.trim().is_empty())
         {
             wire["reasoning_content"] = json!(reasoning);
         }
@@ -115,6 +117,11 @@ fn decorate_responses(
     config: &OpenAiCompatibleConfig,
     request: &ModelTurnRequest,
 ) {
+    if config.family == ApiFamily::DeepSeek {
+        if let Some(limit) = deepseek::default_max_output_tokens(&request.model) {
+            body["max_output_tokens"] = json!(limit);
+        }
+    }
     if config.family != ApiFamily::DeepSeek {
         body["store"] = json!(false);
     } else {

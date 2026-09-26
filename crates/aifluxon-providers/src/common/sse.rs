@@ -18,6 +18,7 @@ impl SseEvent {
 pub struct IncrementalSseParser {
     utf8: Utf8ChunkDecoder,
     buffer: String,
+    scanned: usize,
 }
 
 impl IncrementalSseParser {
@@ -32,32 +33,43 @@ impl IncrementalSseParser {
         if let Some(event) = parse_event_block(&std::mem::take(&mut self.buffer)) {
             events.push(event);
         }
+        self.scanned = 0;
         events
     }
 
     fn drain_complete_events(&mut self) -> Vec<SseEvent> {
         let mut events = Vec::new();
-        while let Some(end) = next_event_boundary(&self.buffer) {
-            let block = self.buffer[..end].to_string();
-            self.buffer = self.buffer[end..].to_string();
-            if let Some(event) = parse_event_block(&block) {
+        let mut consumed = 0;
+        let mut search = self.scanned;
+        while let Some(boundary) = next_event_boundary(&self.buffer[search..]) {
+            let end = search + boundary;
+            if let Some(event) = parse_event_block(&self.buffer[consumed..end]) {
                 events.push(event);
             }
+            consumed = end;
+            search = end;
+        }
+        // Scan only the new suffix; drain once instead of copying the tail per event.
+        self.buffer.drain(..consumed);
+        self.scanned = self.buffer.len().saturating_sub(3);
+        while !self.buffer.is_char_boundary(self.scanned) {
+            self.scanned -= 1;
         }
         events
     }
 }
 
 fn next_event_boundary(buffer: &str) -> Option<usize> {
-    match (
-        buffer.find("\n\n").map(|index| index + 2),
-        buffer.find("\r\n\r\n").map(|index| index + 4),
-    ) {
-        (Some(left), Some(right)) => Some(left.min(right)),
-        (Some(left), None) => Some(left),
-        (None, Some(right)) => Some(right),
-        (None, None) => None,
-    }
+    let bytes = buffer.as_bytes();
+    bytes.iter().enumerate().find_map(|(index, byte)| {
+        if *byte == b'\n' && bytes.get(index + 1) == Some(&b'\n') {
+            Some(index + 2)
+        } else if *byte == b'\r' && bytes.get(index..index + 4) == Some(b"\r\n\r\n") {
+            Some(index + 4)
+        } else {
+            None
+        }
+    })
 }
 
 fn parse_event_block(block: &str) -> Option<SseEvent> {

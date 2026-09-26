@@ -889,6 +889,26 @@ async fn continuation_stops_at_budget() {
 }
 
 #[tokio::test]
+async fn continuation_limit_is_failure_even_when_model_budget_remains() {
+    let registry = ProviderRegistry::new();
+    registry
+        .register(ProviderId::new("scripted"), AlwaysContinue)
+        .unwrap();
+    let backend = backend(registry, ToolRegistry::new(), Arc::new(AllowAllToolPolicy));
+    let mut request = user_request("scripted");
+    request.limits.max_model_rounds = 20;
+    let mut handle = backend.start(request).await.unwrap();
+    let mut terminals = 0;
+    while let Some(event) = handle.events().next().await {
+        if event.event.terminal_state().is_some() {
+            terminals += 1;
+            assert!(matches!(event.event, RunEvent::Failed { .. }));
+        }
+    }
+    assert_eq!(terminals, 1);
+}
+
+#[tokio::test]
 async fn continuation_terminal_exactly_once_and_event_sequence_is_monotonic() {
     let (_backend, mut handle) = start_scripted(vec![
         stop_turn("done"),

@@ -1,6 +1,15 @@
 use crate::strategy::{model_is_family, ModelApiCapabilities};
 use serde_json::{json, Value};
 
+mod reliability;
+pub(crate) use reliability::{retryable_error, validate_turn, AttemptSink};
+
+/// Harness-sized output budget for current models; legacy model limits stay unchanged.
+pub fn default_max_output_tokens(model: &str) -> Option<u32> {
+    let model = normalized_model(model);
+    (model.starts_with("deepseek-v4") || model == "deepseek-flash").then_some(256_000)
+}
+
 fn normalized_model(model: &str) -> String {
     model.trim().to_ascii_lowercase()
 }

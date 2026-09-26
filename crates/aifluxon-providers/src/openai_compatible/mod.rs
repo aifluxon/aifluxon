@@ -2,6 +2,8 @@ mod chat_completions;
 mod continuation;
 mod decorate;
 #[cfg(test)]
+mod deepseek_tests;
+#[cfg(test)]
 mod family_tests;
 mod responses;
 mod streaming;
@@ -18,6 +20,8 @@ use futures_util::{Stream, StreamExt};
 use serde_json::Value;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::OnceLock;
+use std::time::Duration;
 use streaming::LiveStreamDecoder;
 
 pub use chat_completions::{build_chat_completions_body, ChatCompletionsTurnAssembler};
@@ -204,8 +208,14 @@ async fn collect_openai_stream(
 async fn send_openai_reqwest(
     request: &OpenAiWireRequest,
 ) -> Result<reqwest::Response, ProviderError> {
-    let client = crate::common::build_http_client(crate::common::HttpClientTuning::default())
-        .map_err(ProviderError::message)?;
+    // Credentials remain request headers. The shared pool contains no default authorization.
+    static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
+    let client = CLIENT
+        .get_or_init(
+            || crate::common::build_http_client(crate::common::HttpClientTuning::default()),
+        )
+        .as_ref()
+        .map_err(|error| ProviderError::message(error.clone()))?;
     let mut builder = client
         .post(&request.url)
         .bearer_auth(&request.api_key)
@@ -215,7 +225,14 @@ async fn send_openai_reqwest(
     }
     builder.json(&request.body).send().await.map_err(|error| {
         ProviderError::message(crate::common::sanitize_provider_error(
-            format!("Provider request could not be sent: {error}"),
+            format!(
+                "{}: Provider request could not be sent: {error}",
+                if crate::common::is_transient_reqwest_error(&error) {
+                    "PROVIDER_TRANSIENT_TRANSPORT"
+                } else {
+                    "PROVIDER_TRANSPORT"
+                }
+            ),
             &[&request.api_key],
         ))
     })
@@ -250,7 +267,9 @@ impl OpenAiTransport for ReqwestOpenAiTransport {
         let body = response.bytes_stream().map(move |chunk| {
             chunk.map(|bytes| bytes.to_vec()).map_err(|error| {
                 ProviderError::message(crate::common::sanitize_provider_error(
-                    format!("Provider response stream failed: {error}"),
+                    format!(
+                        "PROVIDER_TRANSIENT_TRANSPORT: Provider response stream failed: {error}"
+                    ),
                     &[&api_key],
                 ))
             })
@@ -421,8 +440,14 @@ impl OpenAiCompatibleProvider {
         let (sink, kimi_think) = self.wrap_family_sink(sink);
         let mut decoder =
             LiveStreamDecoder::new(mode, self.config.allow_cumulative_delta, head.content_type);
+        if self.config.family == ApiFamily::DeepSeek {
+            decoder = decoder.with_deepseek_contract();
+        }
         while let Some(chunk) = chunks.next().await {
             let applied = decoder.push(&chunk?, sink.as_ref())?;
+            if decoder.is_complete() {
+                break;
+            }
             if applied > 0 {
                 tokio::task::yield_now().await;
             }
@@ -485,6 +510,57 @@ impl ModelProvider for OpenAiCompatibleProvider {
 
     async fn next_turn(
         &self,
+        request: ModelTurnRequest,
+        sink: Arc<dyn ModelEventSink>,
+    ) -> Result<ModelTurn, ProviderError> {
+        if self.config.family != ApiFamily::DeepSeek {
+            return self.next_turn_once(request, sink).await;
+        }
+        for attempt in 0..3 {
+            let attempt_sink = Arc::new(crate::deepseek::AttemptSink::new(sink.clone()));
+            match self
+                .next_turn_once(request.clone(), attempt_sink.clone())
+                .await
+            {
+                Ok(turn) => return Ok(turn),
+                Err(error) => {
+                    // No tools dispatch until a validated ModelTurn reaches Runtime. Never
+                    // replay visible partial answers or provider-hosted operations automatically.
+                    let retry = attempt < 2
+                        && !attempt_sink.has_visible_output()
+                        && !request.features.web_search
+                        && !request.features.image_generation
+                        && crate::deepseek::retryable_error(&error);
+                    tracing::warn!(
+                        category = "agent",
+                        component = "agent.provider",
+                        event_code = "DEEPSEEK_MODEL_ATTEMPT_FAILED",
+                        provider = "deepseek",
+                        model = request.model.as_str(),
+                        run_id = request.run_id.hyphenated().as_str(),
+                        attempt = attempt + 1,
+                        retry,
+                        error_code = if crate::deepseek::retryable_error(&error) {
+                            "DEEPSEEK_RECOVERABLE"
+                        } else {
+                            "DEEPSEEK_RESPONSE_ERROR"
+                        },
+                        "DeepSeek model attempt failed validation or transport"
+                    );
+                    if !retry {
+                        return Err(error);
+                    }
+                    tokio::time::sleep(Duration::from_millis(250 * (1 << attempt))).await;
+                }
+            }
+        }
+        unreachable!("bounded attempts always return")
+    }
+}
+
+impl OpenAiCompatibleProvider {
+    async fn next_turn_once(
+        &self,
         mut request: ModelTurnRequest,
         sink: Arc<dyn ModelEventSink>,
     ) -> Result<ModelTurn, ProviderError> {
@@ -525,6 +601,13 @@ impl ModelProvider for OpenAiCompatibleProvider {
         }
         let (status, preview, turn, token) = streamed;
         if !(200..300).contains(&status) {
+            if self.config.family == ApiFamily::DeepSeek
+                && matches!(status, 408 | 429 | 500 | 502 | 503 | 504)
+            {
+                return Err(ProviderError::message(format!(
+                    "DEEPSEEK_TRANSIENT_HTTP: Provider returned HTTP {status}."
+                )));
+            }
             return Err(ProviderError::message(
                 crate::common::sanitize_provider_error(
                     format!("Provider returned HTTP {status}: {preview}"),
@@ -535,6 +618,9 @@ impl ModelProvider for OpenAiCompatibleProvider {
         let mut turn = turn.ok_or_else(|| {
             ProviderError::message("Provider returned a success status without a model turn.")
         })?;
+        if self.config.family == ApiFamily::DeepSeek {
+            crate::deepseek::validate_turn(&turn)?;
+        }
         continuation::apply_turn_continuation(
             self.config.family,
             !request.tools.is_empty(),

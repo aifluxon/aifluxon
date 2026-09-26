@@ -121,6 +121,33 @@ pub struct ChatCompletionsTurnAssembler {
 }
 
 impl ChatCompletionsTurnAssembler {
+    pub(crate) fn use_deepseek_contract(&mut self) {
+        self.tools.use_metadata_snapshots();
+    }
+
+    pub(crate) fn finish_deepseek(self) -> Result<ModelTurn, aifluxon_core::ProviderError> {
+        use aifluxon_core::ProviderError;
+        match self.finish_reason.as_deref() {
+            Some("stop" | "tool_calls") => {}
+            Some("length") => return Err(ProviderError::message(
+                "DEEPSEEK_OUTPUT_LIMIT: Output token limit reached; no tools from this truncated response were dispatched.",
+            )),
+            Some("insufficient_system_resource") => return Err(ProviderError::message(
+                "DEEPSEEK_RESOURCE_UNAVAILABLE: Provider could not complete this response.",
+            )),
+            Some(_) => return Err(ProviderError::message(
+                "DEEPSEEK_FINISH_ERROR: Provider did not return a successful finish reason.",
+            )),
+            None => return Err(ProviderError::message(
+                "DEEPSEEK_STREAM_CLOSED: Response ended without a finish reason.",
+            )),
+        }
+        self.tools.validate()?;
+        let turn = self.finish();
+        crate::deepseek::validate_turn(&turn)?;
+        Ok(turn)
+    }
+
     pub fn new(allow_cumulative_delta: bool) -> Self {
         Self {
             allow_cumulative_delta,

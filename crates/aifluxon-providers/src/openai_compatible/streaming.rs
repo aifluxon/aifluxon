@@ -69,6 +69,8 @@ pub(crate) struct LiveStreamDecoder {
     sse: Option<bool>,
     chat: ChatCompletionsTurnAssembler,
     responses: ResponsesTurnAssembler,
+    strict_deepseek: bool,
+    complete: bool,
 }
 
 impl LiveStreamDecoder {
@@ -86,7 +88,19 @@ impl LiveStreamDecoder {
             sse: None,
             chat: ChatCompletionsTurnAssembler::new(allow_cumulative_delta),
             responses: ResponsesTurnAssembler::new(allow_cumulative_delta),
+            strict_deepseek: false,
+            complete: false,
         }
+    }
+
+    pub(crate) fn with_deepseek_contract(mut self) -> Self {
+        self.strict_deepseek = true;
+        self.chat.use_deepseek_contract();
+        self
+    }
+
+    pub(crate) fn is_complete(&self) -> bool {
+        self.complete
     }
 
     pub(crate) fn push(
@@ -133,6 +147,47 @@ impl LiveStreamDecoder {
     ) -> Result<usize, ProviderError> {
         let mut applied = 0;
         for event in events {
+            if self.complete {
+                break;
+            }
+            if self.strict_deepseek {
+                if event.is_done() {
+                    self.complete = true;
+                    break;
+                }
+                if !event.data.trim().is_empty() {
+                    let value: Value = serde_json::from_str(&event.data).map_err(|_| {
+                        ProviderError::message(
+                            "DEEPSEEK_MALFORMED_RESPONSE: Invalid JSON in a stream event.",
+                        )
+                    })?;
+                    if value.get("error").is_some_and(|error| !error.is_null())
+                        || event.event.as_deref() == Some("error")
+                    {
+                        return Err(ProviderError::message(
+                            "DEEPSEEK_FINISH_ERROR: Provider returned a stream error.",
+                        ));
+                    }
+                    match self.mode {
+                        OpenAiApiMode::ChatCompletions => self.chat.apply_value(&value, sink),
+                        OpenAiApiMode::Responses => {
+                            self.responses.apply_value(&value, sink)?;
+                            self.complete = matches!(
+                                value.get("type").and_then(Value::as_str),
+                                Some(
+                                    "response.completed"
+                                        | "response.done"
+                                        | "response.incomplete"
+                                        | "response.failed"
+                                        | "response.cancelled"
+                                )
+                            );
+                        }
+                    }
+                    applied += 1;
+                }
+                continue;
+            }
             if apply_sse_event(self.mode, &mut self.chat, &mut self.responses, event, sink)? {
                 applied += 1;
             }
@@ -155,6 +210,15 @@ impl LiveStreamDecoder {
             }
         }
         if self.sse == Some(true) {
+            if self.strict_deepseek {
+                // An unterminated SSE tail is truncation, never an executable tool call.
+                if !self.complete {
+                    return Err(ProviderError::message(
+                        "DEEPSEEK_STREAM_CLOSED: Stream ended before its terminal event.",
+                    ));
+                }
+                return self.finish_turn();
+            }
             let rest = self.parser.finish();
             self.apply_sse_events(rest, sink)?;
             return match self.mode {
@@ -163,6 +227,11 @@ impl LiveStreamDecoder {
             };
         }
         if self.raw.is_empty() {
+            if self.strict_deepseek {
+                return Err(ProviderError::message(
+                    "DEEPSEEK_EMPTY_RESPONSE: Provider returned an empty body.",
+                ));
+            }
             return match self.mode {
                 OpenAiApiMode::ChatCompletions => Ok(self.chat.finish()),
                 OpenAiApiMode::Responses => self.responses.finish(),
@@ -171,16 +240,38 @@ impl LiveStreamDecoder {
         let value = serde_json::from_slice::<Value>(&self.raw).map_err(|error| {
             ProviderError::message(format!("Provider returned invalid JSON: {error}"))
         })?;
+        if self.strict_deepseek && value.get("error").is_some_and(|error| !error.is_null()) {
+            return Err(ProviderError::message(
+                "DEEPSEEK_FINISH_ERROR: Provider returned a response error.",
+            ));
+        }
         match self.mode {
             OpenAiApiMode::ChatCompletions => {
                 self.chat.apply_value(&value, sink);
-                Ok(self.chat.finish())
+                if self.strict_deepseek {
+                    self.chat.finish_deepseek()
+                } else {
+                    Ok(self.chat.finish())
+                }
             }
             OpenAiApiMode::Responses => {
                 self.responses.apply_value(&value, sink)?;
-                self.responses.finish()
+                if self.strict_deepseek {
+                    self.responses.finish_deepseek()
+                } else {
+                    self.responses.finish()
+                }
             }
         }
+    }
+
+    fn finish_turn(self) -> Result<ModelTurn, ProviderError> {
+        let turn = match self.mode {
+            OpenAiApiMode::ChatCompletions => self.chat.finish_deepseek()?,
+            OpenAiApiMode::Responses => self.responses.finish_deepseek()?,
+        };
+        crate::deepseek::validate_turn(&turn)?;
+        Ok(turn)
     }
 }
 

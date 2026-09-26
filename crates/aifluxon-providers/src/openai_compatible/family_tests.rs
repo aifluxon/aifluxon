@@ -327,14 +327,14 @@ fn deepseek_replays_reasoning_content_on_assistant_history() {
             tool_call_id: None,
             provider_state: Some(json!({
                 "protocol": "chat_completions",
-                "reasoning_content": "I should inspect the file first.",
+                "reasoning_content": " I should inspect the file first.\n",
             })),
         },
     );
     let body = decorated_chat(ApiFamily::DeepSeek, &request);
     assert_eq!(
         body["messages"][0]["reasoning_content"],
-        "I should inspect the file first."
+        " I should inspect the file first.\n"
     );
     assert_eq!(body["messages"][0]["role"], "assistant");
     assert_eq!(body["messages"][0]["tool_calls"][0]["id"], "call-1");

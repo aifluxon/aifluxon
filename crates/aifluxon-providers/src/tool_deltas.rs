@@ -22,9 +22,31 @@ pub enum StreamDeltaKind {
 #[derive(Default)]
 pub struct ToolCallAssembler {
     calls: Vec<PendingToolCall>,
+    metadata_snapshots: bool,
 }
 
 impl ToolCallAssembler {
+    pub(crate) fn use_metadata_snapshots(&mut self) {
+        self.metadata_snapshots = true;
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), aifluxon_core::ProviderError> {
+        let mut ids = std::collections::HashSet::new();
+        for call in &self.calls {
+            if call.id.trim().is_empty()
+                || call.name.trim().is_empty()
+                || !ids.insert(call.id.as_str())
+                || !serde_json::from_str::<Value>(&call.arguments)
+                    .is_ok_and(|arguments| arguments.is_object())
+            {
+                return Err(aifluxon_core::ProviderError::message(
+                    "DEEPSEEK_INVALID_TOOL_CALL: Incomplete tool identity or JSON arguments; no tools were dispatched.",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub fn apply_chat_delta(
         &mut self,
         delta_tool_call: &Value,
@@ -37,7 +59,7 @@ impl ToolCallAssembler {
         }
         let accumulator = &mut self.calls[index];
         if let Some(id) = delta_tool_call.get("id").and_then(Value::as_str) {
-            if is_snapshot {
+            if is_snapshot || self.metadata_snapshots {
                 accumulator.id = id.to_string();
             } else {
                 accumulator.id.push_str(id);
@@ -45,7 +67,7 @@ impl ToolCallAssembler {
         }
         if let Some(function) = delta_tool_call.get("function") {
             if let Some(name) = function.get("name").and_then(Value::as_str) {
-                if is_snapshot {
+                if is_snapshot || self.metadata_snapshots {
                     accumulator.name = name.to_string();
                 } else {
                     accumulator.name.push_str(name);
