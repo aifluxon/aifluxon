@@ -260,6 +260,42 @@ async fn deepseek_responses_also_returns_at_terminal_without_socket_close() {
     );
 }
 
+#[test]
+fn deepseek_responses_accepts_tool_after_reasoning_but_rejects_incomplete_arguments() {
+    for arguments in ["{}", "{\"path\":"] {
+        let mut decoder = LiveStreamDecoder::new(
+            OpenAiApiMode::Responses,
+            false,
+            Some("text/event-stream".into()),
+        )
+        .with_deepseek_contract();
+        let source = event(json!({"type": "response.completed", "response": {
+            "output": [
+                {"type": "reasoning", "id": "reasoning-1", "status": "completed"},
+                {"type": "function_call", "id": "fc-1", "call_id": "call-1", "name": "read_file", "arguments": arguments}
+            ]
+        }}));
+        decoder
+            .push(source.as_bytes(), &NoopModelEventSink)
+            .unwrap();
+        let result = decoder.finish(&NoopModelEventSink);
+        if arguments == "{}" {
+            let turn = result.unwrap();
+            assert_eq!(turn.terminal, ProviderTerminal::ToolCalls);
+            assert_eq!(turn.tool_calls.len(), 1);
+            assert_eq!(
+                turn.tool_calls[0].provider_call_id.as_deref(),
+                Some("call-1")
+            );
+        } else {
+            assert!(result
+                .unwrap_err()
+                .message
+                .starts_with("DEEPSEEK_INVALID_TOOL_CALL"));
+        }
+    }
+}
+
 #[tokio::test]
 async fn pooled_transport_reuses_connection_without_reusing_credentials() {
     use std::io::{BufRead, BufReader, Read, Write};

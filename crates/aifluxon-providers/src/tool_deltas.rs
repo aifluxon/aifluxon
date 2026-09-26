@@ -5,6 +5,7 @@ use serde_json::Value;
 
 #[derive(Default)]
 struct PendingToolCall {
+    observed: bool,
     id: String,
     name: String,
     arguments: String,
@@ -33,6 +34,11 @@ impl ToolCallAssembler {
     pub(crate) fn validate(&self) -> Result<(), aifluxon_core::ProviderError> {
         let mut ids = std::collections::HashSet::new();
         for call in &self.calls {
+            // Responses output indices also include reasoning/message items. Gaps are
+            // placeholders, while an observed empty tool delta must still fail validation.
+            if !call.observed {
+                continue;
+            }
             if call.id.trim().is_empty()
                 || call.name.trim().is_empty()
                 || !ids.insert(call.id.as_str())
@@ -58,6 +64,7 @@ impl ToolCallAssembler {
             self.calls.push(PendingToolCall::default());
         }
         let accumulator = &mut self.calls[index];
+        accumulator.observed = true;
         if let Some(id) = delta_tool_call.get("id").and_then(Value::as_str) {
             if is_snapshot || self.metadata_snapshots {
                 accumulator.id = id.to_string();
