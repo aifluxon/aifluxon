@@ -514,14 +514,11 @@ impl ModelProvider for OpenAiCompatibleProvider {
         sink: Arc<dyn ModelEventSink>,
     ) -> Result<ModelTurn, ProviderError> {
         if self.config.family != ApiFamily::DeepSeek {
-            return self.next_turn_once(request, sink).await;
+            return self.next_turn_once(&request, sink).await;
         }
         for attempt in 0..3 {
             let attempt_sink = Arc::new(crate::deepseek::AttemptSink::new(sink.clone()));
-            match self
-                .next_turn_once(request.clone(), attempt_sink.clone())
-                .await
-            {
+            match self.next_turn_once(&request, attempt_sink.clone()).await {
                 Ok(turn) => return Ok(turn),
                 Err(error) => {
                     // No tools dispatch until a validated ModelTurn reaches Runtime. Never
@@ -540,6 +537,7 @@ impl ModelProvider for OpenAiCompatibleProvider {
                         run_id = request.run_id.hyphenated().as_str(),
                         attempt = attempt + 1,
                         retry,
+                        outcome = if retry { "retrying" } else { "failed" },
                         error_code = if crate::deepseek::retryable_error(&error) {
                             "DEEPSEEK_RECOVERABLE"
                         } else {
@@ -561,9 +559,10 @@ impl ModelProvider for OpenAiCompatibleProvider {
 impl OpenAiCompatibleProvider {
     async fn next_turn_once(
         &self,
-        mut request: ModelTurnRequest,
+        request: &ModelTurnRequest,
         sink: Arc<dyn ModelEventSink>,
     ) -> Result<ModelTurn, ProviderError> {
+        let mut request = std::borrow::Cow::Borrowed(request);
         let mode = decorate::effective_api_mode(&self.config, &request.model);
         validate_deepseek_image_request(&self.config, mode, &request)?;
         let mut body = match mode {
@@ -579,8 +578,8 @@ impl OpenAiCompatibleProvider {
             && !request.tools.is_empty()
             && crate::deepseek::tool_mode_error_status(streamed.0)
         {
-            request.tools.clear();
-            request.messages.push(aifluxon_core::Message {
+            request.to_mut().tools.clear();
+            request.to_mut().messages.push(aifluxon_core::Message {
                 role: aifluxon_core::MessageRole::System,
                 content: vec![aifluxon_core::ContentPart::Text(
                     "Tool mode is unavailable for this DeepSeek request. Do not call tools. Answer based on the provided conversation and active file context only.".to_string(),

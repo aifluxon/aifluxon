@@ -62,7 +62,7 @@ fn decorate_chat(body: &mut Value, config: &OpenAiCompatibleConfig, request: &Mo
                 );
                 deepseek::apply_chat_thinking(body, thinking_enabled(&request.features), &effort);
             }
-            replay_assistant_reasoning_content(body, request);
+            replay_assistant_reasoning_content(body, request, true);
         }
         ApiFamily::Qwen => {
             qwen::apply_chat_thinking(
@@ -85,19 +85,23 @@ fn decorate_chat(body: &mut Value, config: &OpenAiCompatibleConfig, request: &Mo
         ApiFamily::Kimi => {
             kimi::apply_chat_thinking(body, &request.model);
             kimi::apply_chat_limits(body, 32_768);
-            replay_assistant_reasoning_content(body, request);
+            replay_assistant_reasoning_content(body, request, false);
         }
         ApiFamily::Codex => {}
     }
     apply_tool_flags(body, config);
 }
 
-fn replay_assistant_reasoning_content(body: &mut Value, request: &ModelTurnRequest) {
+fn replay_assistant_reasoning_content(
+    body: &mut Value,
+    request: &ModelTurnRequest,
+    deepseek: bool,
+) {
     let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
         return;
     };
     for (wire, original) in messages.iter_mut().zip(request.messages.iter()) {
-        if original.role != MessageRole::Assistant || original.tool_calls.is_empty() {
+        if original.role != MessageRole::Assistant || (deepseek && original.tool_calls.is_empty()) {
             continue;
         }
         if let Some(reasoning) = original
@@ -105,6 +109,7 @@ fn replay_assistant_reasoning_content(body: &mut Value, request: &ModelTurnReque
             .as_ref()
             .and_then(|state| state.get("reasoning_content"))
             .and_then(Value::as_str)
+            .map(|value| if deepseek { value } else { value.trim() })
             .filter(|value| !value.trim().is_empty())
         {
             wire["reasoning_content"] = json!(reasoning);
