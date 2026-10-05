@@ -20,6 +20,7 @@ from aifluxon import (
 )
 
 ResponseFactory = Callable[[list[dict[str, Any]], str], str]
+DEEPSEEK_VISION_MODELS = ["deepseek-flash", "deepseek-v4-flash-vision-exp"]
 
 
 @contextmanager
@@ -70,12 +71,13 @@ def responses_text(text: str = "ok") -> str:
     return f"data: {json.dumps(delta)}\n\ndata: {json.dumps(completed)}\n\n"
 
 
+@pytest.mark.parametrize("model", DEEPSEEK_VISION_MODELS)
 @pytest.mark.asyncio
-async def test_python_deepseek_chat_accepts_file_id_image() -> None:
+async def test_python_deepseek_chat_accepts_file_id_image(model: str) -> None:
     with provider_server(lambda _requests, _path: chat_text()) as (base_url, requests):
         agent = Agent(
             DeepSeek(
-                "deepseek-v4-flash-vision-exp",
+                model,
                 api_key="test-key",
                 base_url=base_url,
                 api_mode="chat_completions",
@@ -95,19 +97,27 @@ async def test_python_deepseek_chat_accepts_file_id_image() -> None:
     ]
 
 
+@pytest.mark.parametrize("model", DEEPSEEK_VISION_MODELS)
 @pytest.mark.asyncio
 async def test_python_deepseek_responses_accepts_url_bytes_and_local_file(
     tmp_path: Path,
+    model: str,
 ) -> None:
     local_image = tmp_path / "sample.webp"
     local_image.write_bytes(b"local-image")
-    with provider_server(lambda _requests, _path: responses_text()) as (
+    paths: list[str] = []
+
+    def factory(_requests: list[dict[str, Any]], path: str) -> str:
+        paths.append(path)
+        return responses_text()
+
+    with provider_server(factory) as (
         base_url,
         requests,
     ):
         agent = Agent(
             DeepSeek(
-                "deepseek-v4-flash-vision-exp",
+                model,
                 api_key="test-key",
                 base_url=base_url,
                 api_mode="responses",
@@ -123,6 +133,7 @@ async def test_python_deepseek_responses_accepts_url_bytes_and_local_file(
         )
 
     assert result.text == "ok"
+    assert paths == ["/v1/responses"]
     content = requests[0]["input"][0]["content"]
     assert content[0] == {"type": "input_text", "text": "Compare the inputs."}
     assert content[1] == {
@@ -134,11 +145,27 @@ async def test_python_deepseek_responses_accepts_url_bytes_and_local_file(
     assert content[3]["image_url"].startswith("data:image/webp;base64,")
 
 
+@pytest.mark.parametrize("model", DEEPSEEK_VISION_MODELS)
+@pytest.mark.parametrize("image_source", ["url", "bytes", "file", "file_id"])
 @pytest.mark.asyncio
-async def test_python_tool_can_return_image_content_to_deepseek_responses() -> None:
+async def test_python_tool_can_return_image_content_to_deepseek_responses(
+    tmp_path: Path,
+    model: str,
+    image_source: str,
+) -> None:
     executions = 0
+    paths: list[str] = []
+    local_image = tmp_path / "tool.webp"
+    local_image.write_bytes(b"tool-image")
+    image = {
+        "url": ImageInput.from_url("https://example.com/tool.webp", "image/webp"),
+        "bytes": ImageInput.from_bytes(b"tool-image", "image/webp"),
+        "file": ImageInput.from_file(local_image),
+        "file_id": ImageInput.from_file_id("file-api-tool-1", "image/webp"),
+    }[image_source]
 
-    def factory(requests: list[dict[str, Any]], _path: str) -> str:
+    def factory(requests: list[dict[str, Any]], path: str) -> str:
+        paths.append(path)
         if len(requests) <= 2:
             item = {
                 "type": "function_call",
@@ -161,18 +188,20 @@ async def test_python_tool_can_return_image_content_to_deepseek_responses() -> N
         return responses_text("described")
 
     @tool(description="Return a viewed image.", effect=ToolEffect.PURE_READ)
-    def view_image() -> list[str | ImageInput]:
+    def view_image() -> ImageInput | list[str | ImageInput]:
         nonlocal executions
         executions += 1
+        if image_source == "bytes":
+            return image
         return [
             "Rendered image",
-            ImageInput.from_url("https://example.com/tool.webp", "image/webp"),
+            image,
         ]
 
     with provider_server(factory) as (base_url, requests):
         agent = Agent(
             DeepSeek(
-                "deepseek-v4-flash-vision-exp",
+                model,
                 api_key="test-key",
                 base_url=base_url,
                 api_mode="responses",
@@ -184,14 +213,20 @@ async def test_python_tool_can_return_image_content_to_deepseek_responses() -> N
     assert result.text == "described"
     assert executions == 1
     assert len(requests) == 3
+    assert paths == ["/v1/responses"] * 3
     for request in requests[1:]:
         output = request["input"][-1]
         assert output["type"] == "function_call_output"
         assert output["call_id"] == "call_view_image"
-        assert output["output"] == [
-            {"type": "input_text", "text": "Rendered image"},
-            {"type": "input_image", "image_url": "https://example.com/tool.webp"},
-        ]
+        image_part = (
+            {"type": "input_image", "file_id": image.reference}
+            if image_source == "file_id"
+            else {"type": "input_image", "image_url": image.reference}
+        )
+        expected_output = [image_part]
+        if image_source != "bytes":
+            expected_output.insert(0, {"type": "input_text", "text": "Rendered image"})
+        assert output["output"] == expected_output
 
 
 @pytest.mark.parametrize("api_mode", ["chat_completions", "responses"])

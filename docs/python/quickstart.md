@@ -157,7 +157,7 @@ from aifluxon import Agent, DeepSeek, ImageInput
 
 agent = Agent(
     DeepSeek(
-        "deepseek-v4-flash-vision-exp",
+        "deepseek-flash",
         api_key="...",
         api_mode="responses",
     )
@@ -185,6 +185,6 @@ DeepSeek("deepseek-v4-pro", api_key="...", api_mode="responses")
 DeepSeek("deepseek-v4-flash", api_key="...", api_mode="chat_completions")
 ```
 
-If the model does not support the requested mode, AIFLUXON falls back to the supported protocol. V4 Flash, V4 Pro, and V4 Flash Vision Exp support Responses.
+If the model does not support the requested mode, AIFLUXON falls back to the supported protocol. Current DeepSeek Flash, V4 Flash, V4 Pro, and V4 Flash Vision Exp support Responses. For image-returning DeepSeek tools, select Responses explicitly; see `bindings/python/examples/view_image.py`.
 
 Runnable copies of these examples live in `bindings/python/examples/`.

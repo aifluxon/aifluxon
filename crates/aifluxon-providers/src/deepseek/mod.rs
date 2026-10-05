@@ -15,16 +15,21 @@ fn is_v4_flash(model: &str) -> bool {
     model_is_family(&normalized_model(model), "deepseek-v4-flash")
 }
 
+fn is_current_flash(model: &str) -> bool {
+    model_is_family(&normalized_model(model), "deepseek-flash")
+}
+
 fn is_v4_pro(model: &str) -> bool {
     model_is_family(&normalized_model(model), "deepseek-v4-pro")
 }
 
 pub fn supports_image_input(model: &str) -> bool {
-    model_is_family(&normalized_model(model), "deepseek-v4-flash-vision-exp")
+    is_current_flash(model)
+        || model_is_family(&normalized_model(model), "deepseek-v4-flash-vision-exp")
 }
 
 pub fn capabilities(model: &str) -> ModelApiCapabilities {
-    if is_v4_flash(model) || is_v4_pro(model) {
+    if is_current_flash(model) || is_v4_flash(model) || is_v4_pro(model) {
         ModelApiCapabilities::CHAT_AND_RESPONSES
     } else {
         ModelApiCapabilities::CHAT_ONLY
@@ -32,11 +37,11 @@ pub fn capabilities(model: &str) -> ModelApiCapabilities {
 }
 
 pub fn supports_low_reasoning_effort(model: &str) -> bool {
-    is_v4_flash(model)
+    is_current_flash(model) || is_v4_flash(model)
 }
 
 pub fn supports_thinking_toggle(model: &str) -> bool {
-    normalized_model(model).starts_with("deepseek-v4")
+    is_current_flash(model) || normalized_model(model).starts_with("deepseek-v4")
 }
 
 pub fn normalize_reasoning_effort(model: &str, requested: &str) -> String {
@@ -71,6 +76,15 @@ mod tests {
     use super::*;
     #[test]
     fn v4_models_and_vision_capabilities_stay_model_specific() {
+        for model in ["deepseek-flash", "DeepSeek-Flash", "deepseek-flash-202609"] {
+            assert!(capabilities(model).supports_responses);
+            assert!(supports_image_input(model));
+            assert!(supports_thinking_toggle(model));
+            assert!(supports_low_reasoning_effort(model));
+            assert_eq!(normalize_reasoning_effort(model, "low"), "low");
+        }
+        assert!(!capabilities("deepseek-flashlight").supports_responses);
+        assert!(!supports_image_input("deepseek-flashlight"));
         assert!(capabilities("deepseek-v4-flash").supports_responses);
         assert!(capabilities("deepseek-v4-pro").supports_responses);
         assert!(capabilities("deepseek-v4-flash-vision-exp").supports_responses);

@@ -51,18 +51,18 @@ Agent(Gemini("gemini-2.5-flash", api_key="..."), reasoning_effort="low")
 
 ## DeepSeek
 
-Two knobs. Effort is sent only when thinking is on, and only `deepseek-v4*` models have the toggle.
+Two knobs. Effort is sent only when thinking is on; `deepseek-flash` and `deepseek-v4*` models have the toggle.
 
 ```python
 Agent(
-    DeepSeek("deepseek-v4-flash", api_key="..."),
+    DeepSeek("deepseek-flash", api_key="..."),
     thinking=True,
-    reasoning_effort="low",  # low is valid on v4-flash; other models raise it to high
+    reasoning_effort="low",  # low is valid on current Flash and V4 Flash
 )
 ```
 
 - Chat: `thinking: { "type": "enabled"|"disabled" }` plus `reasoning_effort` when enabled
-- Responses: `reasoning.effort` (`none` when thinking is off). Select with `DeepSeek(..., api_mode="responses")`. V4 Flash, V4 Pro, and V4 Flash Vision Exp support Responses.
+- Responses: `reasoning.effort` (`none` when thinking is off). Select with `DeepSeek(..., api_mode="responses")`. Current Flash, V4 Flash, V4 Pro, and V4 Flash Vision Exp support Responses.
 - Values: `low` / `high` / `max`
 
 ## Qwen

@@ -21,10 +21,18 @@ provider = OpenAI(model="gpt-4.1", api_key="...", base_url=None, api_mode=None)
 ```python
 from aifluxon import DeepSeek
 DeepSeek(model="deepseek-chat", api_key="...")
-DeepSeek(model="deepseek-v4-pro", api_key="...", api_mode="responses")
+DeepSeek(model="deepseek-flash", api_key="...", api_mode="responses")
 ```
 
-Default base URL: `https://api.deepseek.com`. Default API mode: `chat_completions`. `deepseek-v4-flash`, `deepseek-v4-pro`, and `deepseek-v4-flash-vision-exp` can use `api_mode="responses"`; other DeepSeek models stay on Chat Completions even if Responses is requested. Python and Rust hosts can pass ordered text and `ImageInput` content to `deepseek-v4-flash-vision-exp`. Public URLs, base64 data URLs, provider file IDs, local files, and bytes are supported; local files are converted to data URLs before entering Rust. Tool image output requires Responses mode. Enable thinking on `Agent` with `thinking=True` and `reasoning_effort="low"|"high"|"max"`. Only `deepseek-v4*` models have the toggle; `low` is valid on V4 Flash and is raised to `high` on V4 Pro. See [Thinking](thinking.md).
+Default base URL: `https://api.deepseek.com`. Default API mode: `chat_completions`. `deepseek-flash`, `deepseek-v4-flash`, `deepseek-v4-pro`, and the legacy `deepseek-v4-flash-vision-exp` can use `api_mode="responses"`; other DeepSeek models stay on Chat Completions even if Responses is requested.
+
+The current `deepseek-flash` accepts images; the legacy `deepseek-v4-flash-vision-exp` name remains accepted by DeepSeek. Python and Rust hosts can pass ordered text and `ImageInput` content. Public URLs, base64 data URLs, provider file IDs, local files, and bytes are supported; local files are converted to data URLs before entering Rust. Model aliases are not rejected locally on image-capability grounds: the endpoint decides whether its model supports images. Image format, source, role, and size validation still applies.
+
+Tool image output requires Responses mode. Select it explicitly for a `view_image` tool; Chat Completions can carry user images but cannot carry DeepSeek image tool outputs. `ImageInput.from_file_id()` references a file already uploaded to the selected provider; the SDK does not provide a Files upload client. See [Tools and policy](tools-and-policy.md).
+
+Enable thinking on `Agent` with `thinking=True` and `reasoning_effort="low"|"high"|"max"`. `deepseek-flash` and `deepseek-v4*` models have the toggle; `low` is valid on current Flash and V4 Flash and is raised to `high` on V4 Pro. See [Thinking](thinking.md).
+
+Protocol references: [DeepSeek Vision](https://api-docs.deepseek.com/guides/vision/) and [Responses API](https://api-docs.deepseek.com/guides/responses_api/).
 
 ## Qwen
 

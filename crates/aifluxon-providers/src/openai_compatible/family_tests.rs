@@ -252,6 +252,29 @@ fn deepseek_chat_thinking_and_tool_choice_stay_family_specific() {
 }
 
 #[test]
+fn deepseek_current_flash_preserves_requested_protocol_and_thinking() {
+    for model in ["deepseek-flash", "DeepSeek-Flash", "deepseek-flash-202609"] {
+        let features = aifluxon_core::ProviderFeatureRequest {
+            thinking_mode: Some("enabled".to_string()),
+            reasoning_effort: Some("low".to_string()),
+            ..Default::default()
+        };
+        let request = request_with(model, features);
+        for mode in [OpenAiApiMode::ChatCompletions, OpenAiApiMode::Responses] {
+            assert_eq!(
+                decorate::effective_api_mode(&config(ApiFamily::DeepSeek, mode), model),
+                mode
+            );
+        }
+        let chat = decorated_chat(ApiFamily::DeepSeek, &request);
+        assert_eq!(chat["thinking"]["type"], "enabled");
+        assert_eq!(chat["reasoning_effort"], "low");
+        let responses = decorated_responses(ApiFamily::DeepSeek, &request);
+        assert_eq!(responses["reasoning"]["effort"], "low");
+    }
+}
+
+#[test]
 fn deepseek_v4_flash_keeps_responses_and_native_search_shape() {
     let features = aifluxon_core::ProviderFeatureRequest {
         web_search: true,

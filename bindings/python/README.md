@@ -34,7 +34,7 @@ Multimodal prompt:
 ```python
 from aifluxon import Agent, DeepSeek, ImageInput
 
-agent = Agent(DeepSeek("deepseek-v4-flash-vision-exp", api_key="...", api_mode="responses"))
+agent = Agent(DeepSeek("deepseek-flash", api_key="...", api_mode="responses"))
 result = await agent.run([
     "Describe this image.",
     ImageInput.from_file("./input.png"),
@@ -42,6 +42,8 @@ result = await agent.run([
 ```
 
 `ImageInput` also accepts public URLs, provider file IDs, bytes, and data URLs. Python tools can return `ImageInput` values for multimodal tool output.
+
+For DeepSeek image-returning tools, select `api_mode="responses"`; Chat Completions supports user image inputs but not image tool outputs. The legacy `deepseek-v4-flash-vision-exp` name remains compatible. `ImageInput.from_file_id()` uses an existing provider file ID; it does not upload a file. The SDK supplies the image protocol and `@tool` bridge, while your application supplies and authorizes a `view_image` tool. See `examples/view_image.py` for a runnable example.
 
 `ControlledProvider` is offline. Public providers: OpenAI, DeepSeek, Qwen, Kimi, Gemini, Codex, Custom. ChatGPT Web and DeepSeek Web are not included in this SDK.
 

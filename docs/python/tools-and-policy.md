@@ -37,6 +37,32 @@ def lookup(query: str) -> str:
 
 JSON Schema is generated from type annotations. Supported: `str`, `int`, `float`, `bool`, `list[T]`, `dict[str, T]`, `T | None`. Unsupported annotations raise `TypeError`. There is no silent coercion.
 
+## Image-returning tools
+
+There is no built-in `view_image` tool: applications register one and enforce their own file or image permissions. A tool may return a single `ImageInput` or an ordered sequence of strings and images. These values become real multimodal content, not a JSON string containing an image URL.
+
+```python
+from aifluxon import Agent, DeepSeek, ImageInput, ToolEffect, tool
+
+# Bind to a file the host has already authorized, rather than accepting an
+# arbitrary model-supplied local path.
+authorized_image = "./input.png"
+
+@tool(description="View the selected image.", effect=ToolEffect.FS_READ)
+def view_image() -> ImageInput:
+    return ImageInput.from_file(authorized_image)
+
+agent = Agent(
+    DeepSeek("deepseek-flash", api_key="...", api_mode="responses"),
+    tools=[view_image],
+)
+result = await agent.run("View the selected image and suggest prompt improvements.")
+```
+
+For DeepSeek, user images work in Chat Completions and Responses; **image tool outputs require Responses**. AIFLUXON emits `function_call_output.output` containing `input_image` parts and preserves the provider call ID. URLs and bytes/data URLs use `image_url`; existing provider file IDs use `file_id`. `from_file()` reads and base64-encodes the file; `from_file_id()` does not upload it. The Runtime preserves multimodal results for replay without executing the same recorded tool call again.
+
+For OpenAI-compatible endpoints, image support depends on the model and endpoint. See [Providers](providers.md) and the runnable `bindings/python/examples/view_image.py`.
+
 ## `ToolEffect`
 
 `PURE_READ`, `FS_READ`, `FS_WRITE`, `PROCESS_SPAWN`, `PROCESS_CONTROL`, `NETWORK`, `SETTINGS_WRITE`, `EXTERNAL_SIDE_EFFECT`, `UNKNOWN`.
