@@ -56,12 +56,19 @@ def validate_outage(jobs: list[dict], ci_runs: list[dict], log: str, sha: str) -
 def gh(endpoint: str, *, raw: bool = False):
     result = subprocess.run(
         ["gh", "api", endpoint],
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
         encoding="utf-8",
-    ).stdout
-    return result if raw else json.loads(result)
+        timeout=30,
+    )
+    if result.returncode:
+        error = result.stderr.strip()
+        token = os.environ.get("GH_TOKEN")
+        if token:
+            error = error.replace(token, "***")
+        raise RuntimeError(f"GitHub API request {endpoint} failed: {error}")
+    return result.stdout if raw else json.loads(result.stdout)
 
 
 def main() -> None:
