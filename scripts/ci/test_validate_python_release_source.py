@@ -71,6 +71,19 @@ class ReleaseOutageValidationTests(unittest.TestCase):
         ):
             gh("repos/test/actions/jobs/1/logs", raw=True)
 
+    @patch("validate_python_release_source.subprocess.run")
+    def test_new_cli_log_protection_is_retried_and_sanitized(self, run) -> None:
+        run.side_effect = [
+            subprocess.CompletedProcess(
+                [], 1, "", "pass --allow-escape-sequences to output it anyway"
+            ),
+            subprocess.CompletedProcess(
+                [], 0, "\x1b[31m" + OUTAGE_ERROR + "\x1b[0m", ""
+            ),
+        ]
+        self.assertEqual(gh("repos/test/actions/jobs/1/logs", raw=True), OUTAGE_ERROR)
+        self.assertIn("--allow-escape-sequences", run.call_args.args[0])
+
 
 if __name__ == "__main__":
     unittest.main()

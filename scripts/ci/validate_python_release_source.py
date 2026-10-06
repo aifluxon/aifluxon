@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 
 OUTAGE_ERROR = (
@@ -54,21 +55,34 @@ def validate_outage(jobs: list[dict], ci_runs: list[dict], log: str, sha: str) -
 
 
 def gh(endpoint: str, *, raw: bool = False):
-    result = subprocess.run(
-        ["gh", "api", endpoint],
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=30,
-    )
+    command = ["gh", "api", endpoint]
+
+    def request():
+        return subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+        )
+
+    result = request()
+    if raw and result.returncode and "pass --allow-escape-sequences" in result.stderr:
+        # Newer gh refuses ANSI-containing logs even with captured stdout.
+        # Only opt in for logs; never print them, and sanitize before inspection.
+        command.append("--allow-escape-sequences")
+        result = request()
     if result.returncode:
         error = result.stderr.strip()
         token = os.environ.get("GH_TOKEN")
         if token:
             error = error.replace(token, "***")
         raise RuntimeError(f"GitHub API request {endpoint} failed: {error}")
-    return result.stdout if raw else json.loads(result.stdout)
+    if raw:
+        cleaned = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", result.stdout)
+        return "".join(c for c in cleaned if c in "\n\r\t" or ord(c) >= 32)
+    return json.loads(result.stdout)
 
 
 def main() -> None:
