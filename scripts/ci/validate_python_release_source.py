@@ -55,7 +55,11 @@ def validate_outage(jobs: list[dict], ci_runs: list[dict], log: str, sha: str) -
 
 def gh(endpoint: str, *, raw: bool = False):
     result = subprocess.run(
-        ["gh", "api", endpoint], check=True, capture_output=True, text=True
+        ["gh", "api", endpoint],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
     ).stdout
     return result if raw else json.loads(result)
 
