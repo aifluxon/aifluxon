@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.2.1
+
+- Recognize current `deepseek-flash` vision and Responses support while retaining legacy vision model compatibility.
+- Preserve the requested Responses protocol for Python image-returning tools and current Flash thinking controls.
+- Verify URL, bytes, local-file, and provider-file-ID image tool results, including single-image results and replay-safe execution.
+- Document the Python image protocol and add a host-authorized `view_image` example.
+- Validate complete provider streams and tool arguments, with bounded recovery before visible output or hosted side effects.
 - Tool argument schema failures now return retryable structured tool results with JSON Pointer paths instead of failing the entire run.
 
 ## 0.2.0

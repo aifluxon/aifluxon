@@ -12,7 +12,7 @@ Python → PyO3 → aifluxon-api → runtime → providers / tools
 python -m pip install aifluxon
 ```
 
-Requires **CPython 3.11–3.14** on Windows 10/11 x86_64, Linux glibc x86_64, or Linux glibc aarch64. Wheels are ABI-specific (`cp311`–`cp314`), not abi3. Linux wheels target manylinux2014 / glibc 2.17 or newer. Alpine/musl, macOS, Windows ARM64, PyPy, and free-threaded CPython are not supported by 0.2.0 wheels. Installing a published wheel does not require Rust.
+Requires **CPython 3.11–3.14** on Windows 10/11 x86_64, Linux glibc x86_64, or Linux glibc aarch64. Wheels are ABI-specific (`cp311`–`cp314`), not abi3. Linux wheels target manylinux2014 / glibc 2.17 or newer. Alpine/musl, macOS, Windows ARM64, PyPy, and free-threaded CPython are not supported by 0.2.1 wheels. Installing a published wheel does not require Rust.
 
 License: **Apache-2.0**.
 

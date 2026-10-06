@@ -124,7 +124,7 @@ assert_eq!(run.result().await?.text, "hello");
 # }
 ```
 
-在 `0.2.0` 中，Rust crates 目前通过 Git dependency 使用，暂未发布到 crates.io：
+在 `0.2.1` 中，Rust crates 目前通过 Git dependency 使用，暂未发布到 crates.io：
 
 ```toml
 aifluxon-api = { git = "https://github.com/aifluxon/aifluxon", rev = "<commit>" }
@@ -154,7 +154,7 @@ asyncio.run(main())
 
 `ControlledProvider` 完全离线，适用于测试和示例。正式网络 Provider 的凭据只在内存中传递。
 
-### 0.2.0 Python Distribution 支持范围
+### 0.2.1 Python Distribution 支持范围
 
 | 环境 | 支持状态 |
 | --- | --- |
@@ -166,7 +166,7 @@ asyncio.run(main())
 | macOS | 当前发布的 Python package 不支持 |
 | Alpine/musl、Linux i686、CPython 3.14t、PyPy | 不支持 |
 
-已发布的 Python wheel 不要求用户安装 Rust toolchain。Linux wheel 遵循 PEP 600，glibc 基线为 2.17。每个受支持的 CPython minor version 使用独立 wheel；0.2.0 不使用 `abi3`。
+已发布的 Python wheel 不要求用户安装 Rust toolchain。Linux wheel 遵循 PEP 600，glibc 基线为 2.17。每个受支持的 CPython minor version 使用独立 wheel；0.2.1 不使用 `abi3`。
 
 需要特别区分：**Python wheel 的平台支持范围不等于 AIFLUXON 本身的架构边界。** AIFLUXON 仍然是可嵌入的 Rust Agent Backend；上表是预编译 Python package 的正式支持合同。
 

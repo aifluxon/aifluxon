@@ -1,6 +1,6 @@
 # Quick Start
 
-This page documents APIs that exist in 0.2.0.
+This page documents APIs that exist in 0.2.1.
 
 ## Install
 
@@ -18,7 +18,7 @@ source .venv/bin/activate
 python -m pip install aifluxon
 ```
 
-Published wheels do not require Rust, OpenSSL development headers, libsecret development headers, or DBus development headers. Alpine/musl is not supported by the 0.2.0 wheel set. See [README](README.md) for source development with `maturin develop`.
+Published wheels do not require Rust, OpenSSL development headers, libsecret development headers, or DBus development headers. Alpine/musl is not supported by the 0.2.1 wheel set. See [README](README.md) for source development with `maturin develop`.
 
 ## 1. Import and run a prompt
 

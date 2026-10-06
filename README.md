@@ -124,7 +124,7 @@ assert_eq!(run.result().await?.text, "hello");
 # }
 ```
 
-The Rust crates are consumed as a Git dependency in `0.2.0`; they are not published to crates.io yet.
+The Rust crates are consumed as a Git dependency in `0.2.1`; they are not published to crates.io yet.
 
 ```toml
 aifluxon-api = { git = "https://github.com/aifluxon/aifluxon", rev = "<commit>" }
@@ -154,7 +154,7 @@ asyncio.run(main())
 
 `ControlledProvider` is offline and useful for tests and examples. Public network providers are configured with their own credentials in memory.
 
-### Python distribution support in 0.2.0
+### Python distribution support in 0.2.1
 
 | Requirement | Support |
 | --- | --- |
@@ -166,7 +166,7 @@ asyncio.run(main())
 | macOS | Not supported by the published Python package |
 | Alpine/musl, Linux i686, CPython 3.14t, PyPy | Not supported |
 
-Published Python wheels do not require a Rust toolchain. Linux wheels follow PEP 600 with a glibc 2.17 baseline. Each supported CPython minor version uses its own wheel; 0.2.0 does not use `abi3`.
+Published Python wheels do not require a Rust toolchain. Linux wheels follow PEP 600 with a glibc 2.17 baseline. Each supported CPython minor version uses its own wheel; 0.2.1 does not use `abi3`.
 
 The **Python wheel support matrix does not define the architecture boundary of AIFLUXON itself**: the runtime remains an embeddable Rust backend, while the table above is the formal support contract for prebuilt Python packages.
 
