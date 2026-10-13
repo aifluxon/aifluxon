@@ -477,6 +477,9 @@ impl OpenAiCompatibleProvider {
         if self.config.family == ApiFamily::DeepSeek {
             decoder = decoder.with_deepseek_contract();
         }
+        if self.config.family == ApiFamily::Gemini {
+            decoder = decoder.with_gemini_contract();
+        }
         while let Some(chunk) = chunks.next().await {
             let applied = decoder.push(&chunk?, sink.as_ref())?;
             if decoder.is_complete() {

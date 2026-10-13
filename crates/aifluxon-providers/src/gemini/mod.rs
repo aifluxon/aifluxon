@@ -101,3 +101,65 @@ pub(crate) fn merge_extra_content(into: &mut serde_json::Value, from: &serde_jso
         *into = from.clone();
     }
 }
+
+#[derive(Default)]
+pub(crate) struct ThoughtStream {
+    pending: String,
+    thought: bool,
+}
+
+impl ThoughtStream {
+    pub(crate) fn push(&mut self, text: &str, marked_thought: Option<bool>) -> (String, String) {
+        self.pending.push_str(text);
+        let mut visible = String::new();
+        let mut reasoning = String::new();
+        let mut marked_thought = marked_thought;
+        loop {
+            let lower = self.pending.to_ascii_lowercase();
+            let tag = if self.thought {
+                "</thought>"
+            } else {
+                "<thought>"
+            };
+            if let Some(index) = lower.find(tag) {
+                let prefix: String = self.pending.drain(..index).collect();
+                if self.thought {
+                    reasoning.push_str(&prefix);
+                } else {
+                    visible.push_str(&prefix);
+                }
+                self.pending.drain(..tag.len());
+                self.thought = !self.thought;
+                marked_thought = None;
+                continue;
+            }
+            // Retain incomplete delimiters across content/SSE chunks, including UTF-8.
+            let keep = lower
+                .char_indices()
+                .filter_map(|(index, _)| {
+                    let suffix = &lower[index..];
+                    (!suffix.is_empty() && tag.starts_with(suffix)).then_some(suffix.len())
+                })
+                .max()
+                .unwrap_or(0);
+            let end = self.pending.len() - keep;
+            let prefix: String = self.pending.drain(..end).collect();
+            if self.thought || marked_thought == Some(true) {
+                reasoning.push_str(&prefix);
+            } else {
+                visible.push_str(&prefix);
+            }
+            break;
+        }
+        (visible, reasoning)
+    }
+
+    pub(crate) fn finish(&mut self) -> (String, String) {
+        let tail = std::mem::take(&mut self.pending);
+        if self.thought {
+            (String::new(), tail)
+        } else {
+            (tail, String::new())
+        }
+    }
+}

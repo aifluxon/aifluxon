@@ -139,9 +139,46 @@ pub struct ChatCompletionsTurnAssembler {
     usage: Option<Value>,
     finish_reason: Option<String>,
     extra_content: Value,
+    gemini_thoughts: Option<crate::gemini::ThoughtStream>,
 }
 
 impl ChatCompletionsTurnAssembler {
+    pub(crate) fn use_gemini_contract(&mut self) {
+        self.tools.use_gemini_contract();
+        self.gemini_thoughts.get_or_insert_with(Default::default);
+    }
+
+    fn emit_content(
+        &mut self,
+        visible: &str,
+        reasoning: &str,
+        snapshot: bool,
+        sink: &dyn ModelEventSink,
+    ) {
+        if !reasoning.is_empty() {
+            if let Some(delta) =
+                self.reasoning
+                    .push_compatible(reasoning, snapshot, self.allow_cumulative_delta)
+            {
+                sink.on_reasoning_delta(&delta);
+            }
+        }
+        if !visible.is_empty() {
+            if let Some(delta) =
+                self.text
+                    .push_compatible(visible, snapshot, self.allow_cumulative_delta)
+            {
+                sink.on_text_delta(&delta);
+            }
+        }
+    }
+
+    pub(crate) fn flush_content(&mut self, sink: &dyn ModelEventSink) {
+        if let Some(parser) = &mut self.gemini_thoughts {
+            let (visible, reasoning) = parser.finish();
+            self.emit_content(&visible, &reasoning, false, sink);
+        }
+    }
     pub(crate) fn use_deepseek_contract(&mut self) {
         self.tools.use_metadata_snapshots();
     }
@@ -178,6 +215,7 @@ impl ChatCompletionsTurnAssembler {
             usage: None,
             finish_reason: None,
             extra_content: json!({}),
+            gemini_thoughts: None,
         }
     }
 
@@ -208,7 +246,20 @@ impl ChatCompletionsTurnAssembler {
             .get("extra_content")
             .filter(|value| value.is_object())
         {
-            crate::gemini::merge_extra_content(&mut self.extra_content, extra);
+            if extra.get("google").is_some() {
+                self.use_gemini_contract();
+            }
+            let mut replay_extra = extra.clone();
+            if let Some(google) = replay_extra
+                .get_mut("google")
+                .and_then(Value::as_object_mut)
+            {
+                google.remove("thought"); // This marks a streamed summary, not replay state.
+                if google.is_empty() {
+                    replay_extra.as_object_mut().unwrap().remove("google");
+                }
+            }
+            crate::gemini::merge_extra_content(&mut self.extra_content, &replay_extra);
         }
 
         if let Some(reasoning_delta) = delta_value
@@ -231,15 +282,29 @@ impl ChatCompletionsTurnAssembler {
             .filter(|content| !content.is_empty())
             .or_else(|| delta_value.get("refusal").and_then(Value::as_str))
         {
-            if let Some(delta) =
-                self.text
-                    .push_compatible(content, is_snapshot, self.allow_cumulative_delta)
-            {
-                sink.on_text_delta(&delta);
+            if let Some(parser) = &mut self.gemini_thoughts {
+                if is_snapshot {
+                    *parser = Default::default();
+                }
+                let (visible, reasoning) = parser.push(
+                    content,
+                    delta_value
+                        .pointer("/extra_content/google/thought")
+                        .and_then(Value::as_bool),
+                );
+                self.emit_content(&visible, &reasoning, is_snapshot, sink);
+            } else {
+                self.emit_content(content, "", is_snapshot, sink);
             }
         }
 
         if let Some(delta_tool_calls) = delta_value.get("tool_calls").and_then(Value::as_array) {
+            if delta_tool_calls
+                .iter()
+                .any(|call| call.pointer("/extra_content/google").is_some())
+            {
+                self.use_gemini_contract();
+            }
             for (fallback_position, delta_tool_call) in delta_tool_calls.iter().enumerate() {
                 self.tools
                     .apply_chat_delta(delta_tool_call, fallback_position, is_snapshot);
@@ -247,7 +312,8 @@ impl ChatCompletionsTurnAssembler {
         }
     }
 
-    pub fn finish(self) -> ModelTurn {
+    pub fn finish(mut self) -> ModelTurn {
+        self.flush_content(&aifluxon_core::NoopModelEventSink);
         let tool_metadata = self.tools.extra_content_by_call_id();
         let tool_calls = finished_tool_calls(self.tools);
         let terminal = if !tool_calls.is_empty()

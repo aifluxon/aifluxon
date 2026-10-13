@@ -239,3 +239,87 @@ fn gemini_thinking_matches_model_capabilities_and_default_stays_dynamic() {
         json!({"include_thoughts": true})
     );
 }
+
+#[derive(Default)]
+struct TextSink {
+    visible: Mutex<String>,
+    reasoning: Mutex<String>,
+}
+impl ModelEventSink for TextSink {
+    fn on_text_delta(&self, delta: &str) {
+        self.visible.lock().unwrap().push_str(delta);
+    }
+    fn on_reasoning_delta(&self, delta: &str) {
+        self.reasoning.lock().unwrap().push_str(delta);
+    }
+}
+
+#[test]
+fn gemini_unindexed_parallel_calls_and_split_thoughts_preserve_identity_and_channels() {
+    let wire = response(vec![
+        json!({"choices":[{"delta":{"content":"<tho","extra_content":{"google":{"thought":true}}}}]}),
+        json!({"choices":[{"delta":{"content":"ught>思考摘要</tho"}}]}),
+        json!({"choices":[{"delta":{"content":"ught>执行检查","tool_calls":[{"id":"call-read","function":{"name":"read_file","arguments":"{\"path\":\"README.md\"}"},"extra_content":{"google":{"thought_signature":"sig-A"}}}]}}]}),
+        json!({"choices":[{"delta":{"tool_calls":[{"id":"call-shell","function":{"name":"shell","arguments":"{\"command\":\"echo ok\"}"}}]}}]}),
+        json!({"choices":[{"delta":{"tool_calls":[{"id":"call-read","extra_content":{"google":{"thought_signature":"sig-A"}}}]}}]}),
+        json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}]}),
+    ]);
+    for split in 0..=wire.chunks[0].len() {
+        let bytes = &wire.chunks[0];
+        let fragmented = OpenAiWireResponse {
+            chunks: vec![bytes[..split].to_vec(), bytes[split..].to_vec()],
+            ..wire.clone()
+        };
+        let sink = Arc::new(TextSink::default());
+        let turn = decode_chat_response(&fragmented, sink.clone()).unwrap();
+        assert_eq!(turn.tool_calls.len(), 2);
+        assert_eq!(turn.tool_calls[0].wire_call_id(), "call-read");
+        assert_eq!(turn.tool_calls[1].wire_call_id(), "call-shell");
+        assert_eq!(turn.tool_calls[0].arguments, json!({"path":"README.md"}));
+        assert_eq!(turn.tool_calls[1].arguments, json!({"command":"echo ok"}));
+        assert_eq!(turn.reasoning, "思考摘要");
+        assert_eq!(turn.text, "执行检查");
+        assert_eq!(*sink.visible.lock().unwrap(), turn.text);
+        assert_eq!(*sink.reasoning.lock().unwrap(), turn.reasoning);
+        assert!(turn
+            .opaque
+            .pointer("/extra_content/google/thought")
+            .is_none());
+        assert_eq!(
+            turn.opaque["tool_call_extra_content"]["call-read"]["google"]["thought_signature"],
+            "sig-A"
+        );
+        assert!(turn.opaque["tool_call_extra_content"]
+            .get("call-shell")
+            .is_none());
+    }
+}
+
+#[test]
+fn gemini_complete_and_flagged_thought_summaries_do_not_hide_answers() {
+    for (content, flag, reasoning, visible) in [
+        (
+            "<thought>summary</thought>answer",
+            true,
+            "summary",
+            "answer",
+        ),
+        ("summary", true, "summary", ""),
+        ("answer", false, "", "answer"),
+    ] {
+        let mut parser = crate::gemini::ThoughtStream::default();
+        let (text, thoughts) = parser.push(content, Some(flag));
+        assert_eq!(text, visible);
+        assert_eq!(thoughts, reasoning);
+    }
+}
+
+#[test]
+fn gemini_thought_markup_is_not_parsed_for_other_provider_content() {
+    let wire = response(vec![
+        json!({"choices":[{"delta":{"content":"<thought>literal example</thought>"},"finish_reason":"stop"}]}),
+    ]);
+    let turn = decode_chat_response(&wire, Arc::new(NoopModelEventSink)).unwrap();
+    assert_eq!(turn.text, "<thought>literal example</thought>");
+    assert!(turn.reasoning.is_empty());
+}

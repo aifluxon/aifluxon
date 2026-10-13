@@ -25,9 +25,14 @@ pub enum StreamDeltaKind {
 pub struct ToolCallAssembler {
     calls: Vec<PendingToolCall>,
     metadata_snapshots: bool,
+    gemini_contract: bool,
 }
 
 impl ToolCallAssembler {
+    pub(crate) fn use_gemini_contract(&mut self) {
+        self.gemini_contract = true;
+        self.metadata_snapshots = true;
+    }
     pub(crate) fn use_metadata_snapshots(&mut self) {
         self.metadata_snapshots = true;
     }
@@ -60,7 +65,30 @@ impl ToolCallAssembler {
         fallback_position: usize,
         is_snapshot: bool,
     ) {
-        let index = streamed_tool_call_index(delta_tool_call, fallback_position, self.calls.len());
+        let index = if self.gemini_contract
+            && delta_tool_call
+                .get("index")
+                .and_then(Value::as_u64)
+                .is_none()
+        {
+            // Gemini emits separate, complete tool calls without OpenAI's index.
+            // Their native ID distinguishes calls; position zero is not a stream identity.
+            delta_tool_call
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(|id| {
+                    self.calls
+                        .iter()
+                        .position(|call| call.id == id)
+                        .unwrap_or(self.calls.len())
+                })
+                .unwrap_or_else(|| {
+                    streamed_tool_call_index(delta_tool_call, fallback_position, self.calls.len())
+                })
+        } else {
+            streamed_tool_call_index(delta_tool_call, fallback_position, self.calls.len())
+        };
         while self.calls.len() <= index {
             self.calls.push(PendingToolCall::default());
         }

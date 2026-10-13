@@ -99,6 +99,11 @@ impl LiveStreamDecoder {
         self
     }
 
+    pub fn with_gemini_contract(mut self) -> Self {
+        self.chat.use_gemini_contract();
+        self
+    }
+
     pub fn is_complete(&self) -> bool {
         self.complete
     }
@@ -210,6 +215,7 @@ impl LiveStreamDecoder {
                     "PROVIDER_STREAM_CLOSED: Stream ended before its terminal event.",
                 ));
             }
+            self.chat.flush_content(sink);
             return self.finish_turn();
         }
         if self.raw.is_empty() {
@@ -229,6 +235,7 @@ impl LiveStreamDecoder {
             OpenAiApiMode::ChatCompletions => self.chat.apply_value(&value, sink),
             OpenAiApiMode::Responses => self.responses.apply_value(&value, sink)?,
         }
+        self.chat.flush_content(sink);
         self.finish_turn()
     }
 
