@@ -43,17 +43,37 @@ pub(crate) fn message_to_wire(message: &Message) -> Value {
                 .tool_calls
                 .iter()
                 .map(|call| {
-                    json!({
+                    let mut wire = json!({
                         "id": call.wire_call_id(),
                         "type": "function",
                         "function": {
                             "name": call.name,
                             "arguments": call.arguments.to_string(),
                         }
-                    })
+                    });
+                    if let Some(extra) = message
+                        .provider_state
+                        .as_ref()
+                        .and_then(|state| state.get("tool_call_extra_content"))
+                        .and_then(|metadata| metadata.get(call.wire_call_id()))
+                        .filter(|extra| extra.is_object())
+                    {
+                        wire["extra_content"] = extra.clone();
+                    }
+                    wire
                 })
                 .collect(),
         );
+    }
+    if message.role == MessageRole::Assistant {
+        if let Some(extra) = message
+            .provider_state
+            .as_ref()
+            .and_then(|state| state.get("extra_content"))
+            .filter(|extra| extra.is_object())
+        {
+            wire["extra_content"] = extra.clone();
+        }
     }
     if message.role == MessageRole::Tool {
         if let Some(tool_call_id) = tool_message_call_id(message) {
@@ -118,6 +138,7 @@ pub struct ChatCompletionsTurnAssembler {
     tools: ToolCallAssembler,
     usage: Option<Value>,
     finish_reason: Option<String>,
+    extra_content: Value,
 }
 
 impl ChatCompletionsTurnAssembler {
@@ -156,6 +177,7 @@ impl ChatCompletionsTurnAssembler {
             tools: ToolCallAssembler::default(),
             usage: None,
             finish_reason: None,
+            extra_content: json!({}),
         }
     }
 
@@ -182,6 +204,12 @@ impl ChatCompletionsTurnAssembler {
         let Some(delta_value) = choice.get("delta").or_else(|| choice.get("message")) else {
             return;
         };
+        if let Some(extra) = delta_value
+            .get("extra_content")
+            .filter(|value| value.is_object())
+        {
+            crate::gemini::merge_extra_content(&mut self.extra_content, extra);
+        }
 
         if let Some(reasoning_delta) = delta_value
             .get("reasoning_content")
@@ -220,6 +248,7 @@ impl ChatCompletionsTurnAssembler {
     }
 
     pub fn finish(self) -> ModelTurn {
+        let tool_metadata = self.tools.extra_content_by_call_id();
         let tool_calls = finished_tool_calls(self.tools);
         let terminal = if !tool_calls.is_empty()
             || matches!(
@@ -237,6 +266,19 @@ impl ChatCompletionsTurnAssembler {
         });
         if !reasoning.is_empty() {
             opaque["reasoning_content"] = json!(reasoning);
+        }
+        if tool_metadata
+            .as_object()
+            .is_some_and(|metadata| !metadata.is_empty())
+        {
+            opaque["tool_call_extra_content"] = tool_metadata;
+        }
+        if self
+            .extra_content
+            .as_object()
+            .is_some_and(|extra| !extra.is_empty())
+        {
+            opaque["extra_content"] = self.extra_content;
         }
         ModelTurn {
             text: self.text.emitted().to_string(),

@@ -406,7 +406,11 @@ fn gemini_chat_normalizes_reasoning_effort() {
         ApiFamily::Gemini,
         &request_with("gemini-2.5-flash", features),
     );
-    assert_eq!(body["reasoning_effort"], "high");
+    assert_eq!(
+        body["extra_body"]["google"]["thinking_config"]["thinking_budget"],
+        24576
+    );
+    assert!(body.get("reasoning_effort").is_none());
 }
 
 #[test]

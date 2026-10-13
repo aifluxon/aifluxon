@@ -5,6 +5,8 @@ mod decorate;
 mod deepseek_tests;
 #[cfg(test)]
 mod family_tests;
+#[cfg(test)]
+mod gemini_tests;
 mod reliability;
 #[cfg(test)]
 mod reliability_tests;

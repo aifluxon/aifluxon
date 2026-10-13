@@ -9,6 +9,7 @@ struct PendingToolCall {
     id: String,
     name: String,
     arguments: String,
+    extra_content: Option<Value>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -65,6 +66,17 @@ impl ToolCallAssembler {
         }
         let accumulator = &mut self.calls[index];
         accumulator.observed = true;
+        if let Some(extra) = delta_tool_call
+            .get("extra_content")
+            .filter(|value| value.is_object())
+        {
+            crate::gemini::merge_extra_content(
+                accumulator
+                    .extra_content
+                    .get_or_insert_with(|| serde_json::json!({})),
+                extra,
+            );
+        }
         if let Some(id) = delta_tool_call.get("id").and_then(Value::as_str) {
             if is_snapshot || self.metadata_snapshots {
                 accumulator.id = id.to_string();
@@ -102,6 +114,18 @@ impl ToolCallAssembler {
                 accumulator.arguments.push_str(arguments);
             }
         }
+    }
+
+    pub(crate) fn extra_content_by_call_id(&self) -> Value {
+        let mut metadata = serde_json::Map::new();
+        for call in &self.calls {
+            if !call.id.is_empty() {
+                if let Some(extra) = &call.extra_content {
+                    metadata.insert(call.id.clone(), extra.clone());
+                }
+            }
+        }
+        Value::Object(metadata)
     }
 
     pub fn finish(self) -> Vec<ToolCall> {
