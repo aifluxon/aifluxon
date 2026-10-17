@@ -299,7 +299,7 @@ fn deepseek_v4_pro_keeps_requested_responses_and_maps_low_effort() {
     );
     assert_eq!(
         decorate::effective_api_mode(&config, "deepseek-chat"),
-        OpenAiApiMode::ChatCompletions
+        OpenAiApiMode::Responses
     );
     let features = aifluxon_core::ProviderFeatureRequest {
         thinking_mode: Some("enabled".to_string()),

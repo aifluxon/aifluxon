@@ -12,9 +12,13 @@ mod result;
 mod run;
 mod stream;
 mod workspace;
+mod web_tools;
 
 #[cfg(test)]
 mod engine_tests;
+
+#[cfg(test)]
+mod web_tools_tests;
 
 pub use agent::{ProviderRegistry, ProviderRegistryError, ToolPolicy};
 pub use auth::{
@@ -40,6 +44,7 @@ pub use result::RunResult;
 pub use run::{RunHandle, RunSnapshot};
 pub use stream::{NoopRunEventSink, RunEvent, RunEventEnvelope, RunEventSink, RunEventStream};
 pub use workspace::{EmptyWorkspace, Workspace};
+pub use web_tools::register_deepseek_web_tools;
 
 pub use aifluxon_core::{
     ArtifactRef, CapabilityId, ContentPart, ContinuationReason, ExecutionAuthority, ImageContent,

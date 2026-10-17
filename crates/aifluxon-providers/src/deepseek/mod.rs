@@ -1,6 +1,9 @@
 use crate::strategy::{model_is_family, ModelApiCapabilities};
 use serde_json::{json, Value};
 
+mod web;
+pub use web::DeepSeekWebClient;
+
 /// Harness-sized output budget for current models; legacy model limits stay unchanged.
 pub fn default_max_output_tokens(model: &str) -> Option<u32> {
     let model = normalized_model(model);
@@ -19,21 +22,15 @@ fn is_current_flash(model: &str) -> bool {
     model_is_family(&normalized_model(model), "deepseek-flash")
 }
 
-fn is_v4_pro(model: &str) -> bool {
-    model_is_family(&normalized_model(model), "deepseek-v4-pro")
-}
-
 pub fn supports_image_input(model: &str) -> bool {
     is_current_flash(model)
         || model_is_family(&normalized_model(model), "deepseek-v4-flash-vision-exp")
 }
 
-pub fn capabilities(model: &str) -> ModelApiCapabilities {
-    if is_current_flash(model) || is_v4_flash(model) || is_v4_pro(model) {
-        ModelApiCapabilities::CHAT_AND_RESPONSES
-    } else {
-        ModelApiCapabilities::CHAT_ONLY
-    }
+pub fn capabilities(_model: &str) -> ModelApiCapabilities {
+    // Preserve the caller's protocol choice, including proxy aliases and future
+    // model names. Endpoint support is validated by the provider.
+    ModelApiCapabilities::CHAT_AND_RESPONSES
 }
 
 pub fn supports_low_reasoning_effort(model: &str) -> bool {
@@ -83,13 +80,13 @@ mod tests {
             assert!(supports_low_reasoning_effort(model));
             assert_eq!(normalize_reasoning_effort(model, "low"), "low");
         }
-        assert!(!capabilities("deepseek-flashlight").supports_responses);
+        assert!(capabilities("deepseek-flashlight").supports_responses);
         assert!(!supports_image_input("deepseek-flashlight"));
         assert!(capabilities("deepseek-v4-flash").supports_responses);
         assert!(capabilities("deepseek-v4-pro").supports_responses);
         assert!(capabilities("deepseek-v4-flash-vision-exp").supports_responses);
         assert!(capabilities("DeepSeek-V4-Pro").supports_responses);
-        assert!(!capabilities("deepseek-chat").supports_responses);
+        assert!(capabilities("deepseek-chat").supports_responses);
         assert!(supports_image_input("deepseek-v4-flash-vision-exp"));
         assert!(supports_image_input("DeepSeek-V4-Flash-Vision-Exp-202608"));
         assert!(!supports_image_input("deepseek-v4-flash"));

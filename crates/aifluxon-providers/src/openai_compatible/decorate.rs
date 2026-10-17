@@ -197,7 +197,13 @@ fn apply_hosted_tools(
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    let explicit_deepseek_search = config.family == ApiFamily::DeepSeek
+        && tools.iter().any(|tool| {
+            tool.get("type").and_then(Value::as_str) == Some("function")
+                && tool.get("name").and_then(Value::as_str) == Some("web_search")
+        });
     let model_selected_search = request.features.web_search
+        && !explicit_deepseek_search
         && matches!(
             config.family,
             ApiFamily::OpenAi | ApiFamily::Codex | ApiFamily::DeepSeek
