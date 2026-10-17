@@ -43,7 +43,11 @@ impl AgentLoopBudget {
         Self {
             max_model_rounds: limits.max_model_rounds,
             max_tool_invocations: limits.max_tool_invocations,
-            max_wall_time: Duration::from_secs(30 * 60),
+            max_wall_time: if limits.is_unlimited() {
+                Duration::MAX
+            } else {
+                Duration::from_secs(30 * 60)
+            },
             max_input_tokens: u64::MAX,
             max_output_tokens: u64::MAX,
             max_reasoning_tokens: u64::MAX,
@@ -64,22 +68,24 @@ impl AgentLoopBudget {
     }
 
     pub fn consume_model_round(&mut self) -> Result<(), AgentBudgetExceeded> {
-        if self.model_rounds >= self.max_model_rounds {
+        if self.max_model_rounds != u32::MAX && self.model_rounds >= self.max_model_rounds {
             return Err(AgentBudgetExceeded {
                 kind: AgentBudgetKind::ModelRounds,
             });
         }
-        self.model_rounds += 1;
+        self.model_rounds = self.model_rounds.saturating_add(1);
         self.check_wall_time()
     }
 
     pub fn consume_tool_invocation(&mut self) -> Result<(), AgentBudgetExceeded> {
-        if self.tool_invocations >= self.max_tool_invocations {
+        if self.max_tool_invocations != u32::MAX
+            && self.tool_invocations >= self.max_tool_invocations
+        {
             return Err(AgentBudgetExceeded {
                 kind: AgentBudgetKind::ToolInvocations,
             });
         }
-        self.tool_invocations += 1;
+        self.tool_invocations = self.tool_invocations.saturating_add(1);
         self.check_wall_time()
     }
 
@@ -131,6 +137,44 @@ impl AgentLoopBudget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unlimited_budget_survives_old_limits_elapsed_time_and_counter_saturation() {
+        let mut budget = AgentLoopBudget::from_run_limits(RunLimits::unlimited());
+        budget.started_at = Instant::now() - Duration::from_secs(31 * 60);
+        for _ in 0..128 {
+            budget.consume_model_round().unwrap();
+            budget.consume_tool_invocation().unwrap();
+        }
+        budget.model_rounds = u32::MAX - 1;
+        budget.tool_invocations = u32::MAX - 1;
+        for _ in 0..3 {
+            budget.consume_model_round().unwrap();
+            budget.consume_tool_invocation().unwrap();
+            budget.consume_tokens(u64::MAX, u64::MAX, u64::MAX).unwrap();
+        }
+        assert_eq!(budget.model_rounds(), u32::MAX);
+        assert_eq!(budget.tool_invocations(), u32::MAX);
+    }
+
+    #[test]
+    fn bounded_runs_keep_their_wall_time_budget_and_zero_limits() {
+        let mut budget = AgentLoopBudget::from_run_limits(RunLimits::default());
+        budget.started_at = Instant::now() - Duration::from_secs(31 * 60);
+        assert_eq!(
+            budget.consume_model_round().unwrap_err().kind,
+            AgentBudgetKind::WallTime
+        );
+        let mut budget = AgentLoopBudget::with_tool_round_limit(0);
+        assert_eq!(
+            budget.consume_model_round().unwrap_err().kind,
+            AgentBudgetKind::ModelRounds
+        );
+        assert_eq!(
+            budget.consume_tool_invocation().unwrap_err().kind,
+            AgentBudgetKind::ToolInvocations
+        );
+    }
 
     #[test]
     fn bug_agent_012_budget_is_monotonic_across_retries() {

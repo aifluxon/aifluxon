@@ -115,7 +115,11 @@ impl AgentCoordinator {
         execute: impl Fn(&ToolCall) -> Value + Send + Sync,
     ) -> Result<ModelTurn, ProviderError> {
         let sink: Arc<dyn ModelEventSink> = Arc::new(NoopModelEventSink);
-        let mut continuations = ContinuationCounts::default();
+        let mut continuations = ContinuationCounts::for_limits(
+            self.run_table
+                .limits(&self.run_id)
+                .map_err(|error| ProviderError::message(error.message()))?,
+        );
         loop {
             self.consume_model_round().map_err(|error| {
                 ProviderError::message(format!("Agent loop budget exceeded: {:?}", error.kind))
@@ -162,7 +166,11 @@ impl AgentCoordinator {
             .run_table
             .cancellation_token(&self.run_id)
             .map_err(|error| ProviderError::message(error.message()))?;
-        let mut continuations = ContinuationCounts::default();
+        let mut continuations = ContinuationCounts::for_limits(
+            self.run_table
+                .limits(&self.run_id)
+                .map_err(|error| ProviderError::message(error.message()))?,
+        );
         loop {
             if cancellation.is_cancelled() {
                 return Err(ProviderError::message("Run was cancelled."));
@@ -690,6 +698,30 @@ mod tests {
         assert_eq!(turn.text, "done");
         assert_eq!(coordinator.model_rounds(), 2);
         assert_eq!(provider.session_keys.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn unlimited_simple_loop_continues_past_the_old_round_and_continuation_limits() {
+        let table = RunTable::new();
+        let context = table
+            .start(None, None, aifluxon_core::RunLimits::unlimited())
+            .unwrap();
+        let coordinator = AgentCoordinator::for_run(table, context.run_id);
+        let provider = ContinuationProvider {
+            remaining: Mutex::new(128),
+            session_keys: Mutex::new(Vec::new()),
+            run_ids: Mutex::new(Vec::new()),
+        };
+        let turn = coordinator
+            .run_model_tool_loop(
+                &provider,
+                continuation_request(),
+                |_| serde_json::json!({ "ok": true }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(turn.text, "done");
+        assert_eq!(coordinator.model_rounds(), 129);
     }
 
     #[tokio::test]

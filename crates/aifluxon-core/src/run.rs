@@ -13,8 +13,25 @@ pub struct RunContext {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RunLimits {
+    /// `u32::MAX` disables the model-round limit.
     pub max_model_rounds: u32,
+    /// `u32::MAX` disables the tool-invocation limit.
     pub max_tool_invocations: u32,
+}
+
+impl RunLimits {
+    /// Disable all run-level loop budgets, including continuation and wall time.
+    /// Provider errors, normal completion, cancellation and tool policy still apply.
+    pub const fn unlimited() -> Self {
+        Self {
+            max_model_rounds: u32::MAX,
+            max_tool_invocations: u32::MAX,
+        }
+    }
+
+    pub const fn is_unlimited(self) -> bool {
+        self.max_model_rounds == u32::MAX && self.max_tool_invocations == u32::MAX
+    }
 }
 
 impl Default for RunLimits {

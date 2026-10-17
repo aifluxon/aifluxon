@@ -1,16 +1,27 @@
 use aifluxon_core::{
-    ContentPart, ContinuationReason, Message, MessageRole, ModelTurn, ModelTurnRequest,
+    ContentPart, ContinuationReason, Message, MessageRole, ModelTurn, ModelTurnRequest, RunLimits,
 };
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct ContinuationCounts {
+    unlimited: bool,
     incomplete: u32,
     summary_only: u32,
     provider_requested: u32,
 }
 
 impl ContinuationCounts {
+    pub(crate) fn for_limits(limits: RunLimits) -> Self {
+        Self {
+            unlimited: limits.is_unlimited(),
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn try_begin(&mut self, reason: ContinuationReason) -> bool {
+        if self.unlimited {
+            return true;
+        }
         let slot = match reason {
             ContinuationReason::Incomplete => &mut self.incomplete,
             ContinuationReason::SummaryOnly => &mut self.summary_only,
@@ -150,5 +161,19 @@ mod tests {
             assert!(counts.try_begin(ContinuationReason::ProviderRequested));
         }
         assert!(!counts.try_begin(ContinuationReason::ProviderRequested));
+    }
+
+    #[test]
+    fn unlimited_runs_continue_past_each_reason_limit() {
+        let mut counts = ContinuationCounts::for_limits(RunLimits::unlimited());
+        for _ in 0..128 {
+            for reason in [
+                ContinuationReason::Incomplete,
+                ContinuationReason::SummaryOnly,
+                ContinuationReason::ProviderRequested,
+            ] {
+                assert!(counts.try_begin(reason));
+            }
+        }
     }
 }

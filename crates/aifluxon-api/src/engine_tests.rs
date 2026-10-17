@@ -762,6 +762,95 @@ async fn continuation_runs_another_model_turn() {
 }
 
 #[tokio::test]
+async fn unlimited_run_passes_all_loop_limits_and_completes_once() {
+    let mut turns = Vec::new();
+    for reason in [
+        ContinuationReason::Incomplete,
+        ContinuationReason::SummaryOnly,
+        ContinuationReason::ProviderRequested,
+    ] {
+        for _ in 0..8 {
+            turns.push(continue_turn(
+                reason,
+                "",
+                json!({ "hidden_context": "recap" }),
+            ));
+        }
+    }
+    for index in 0..80 {
+        turns.push(tool_turn("read_file", &format!("call-{index}")));
+    }
+    turns.push(stop_turn("done"));
+    turns.reverse();
+    let provider = scripted(turns);
+    let requests = provider.requests.clone();
+    let registry = ProviderRegistry::new();
+    registry
+        .register(ProviderId::new("scripted"), provider)
+        .unwrap();
+    let tools = ToolRegistry::new();
+    let executions = Arc::new(AtomicUsize::new(0));
+    tools
+        .register(
+            read_descriptor(),
+            Arc::new(EchoTool {
+                executions: executions.clone(),
+            }),
+        )
+        .unwrap();
+    let backend = backend(registry, tools, Arc::new(AllowAllToolPolicy));
+    let mut request = user_request("scripted");
+    request.limits = RunLimits::unlimited();
+    let mut handle = backend.start(request).await.unwrap();
+    let run_id = handle.id();
+    let mut terminals = 0;
+    let mut sequence = 0;
+    while let Some(envelope) = handle.events().next().await {
+        assert!(envelope.sequence > sequence);
+        sequence = envelope.sequence;
+        assert_eq!(envelope.run_id, run_id);
+        if envelope.event.terminal_state().is_some() {
+            terminals += 1;
+            assert!(matches!(envelope.event, RunEvent::Completed { .. }));
+        }
+    }
+    assert_eq!(terminals, 1);
+    assert_eq!(requests.lock().unwrap().len(), 105);
+    assert_eq!(executions.load(Ordering::SeqCst), 80);
+}
+
+#[tokio::test]
+async fn unlimited_continuation_can_be_cancelled() {
+    let second_started = Arc::new(AtomicBool::new(false));
+    let registry = ProviderRegistry::new();
+    registry
+        .register(
+            ProviderId::new("scripted"),
+            ContinueThenPark {
+                first_started: Arc::new(AtomicBool::new(false)),
+                second_started: second_started.clone(),
+            },
+        )
+        .unwrap();
+    let backend = backend(registry, ToolRegistry::new(), Arc::new(AllowAllToolPolicy));
+    let mut request = user_request("scripted");
+    request.limits = RunLimits::unlimited();
+    let mut handle = backend.start(request).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while !second_started.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    backend.cancel(handle.id()).await.unwrap();
+    assert!(matches!(
+        wait_for_terminal(&mut handle).await,
+        RunEvent::Cancelled
+    ));
+}
+
+#[tokio::test]
 async fn continuation_preserves_run_identity_and_provider_session_key() {
     let provider = scripted(vec![
         stop_turn("done"),

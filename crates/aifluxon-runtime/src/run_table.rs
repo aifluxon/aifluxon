@@ -96,6 +96,7 @@ pub struct CancellationReport {
 
 struct RunRecord {
     context: RunContext,
+    limits: RunLimits,
     state: RunState,
     cancellation: RunCancellationToken,
     budget: Arc<Mutex<AgentLoopBudget>>,
@@ -161,6 +162,7 @@ impl RunTable {
             context.run_id,
             RunRecord {
                 context,
+                limits,
                 state: RunState::Running,
                 cancellation: RunCancellationToken::default(),
                 budget: Arc::new(Mutex::new(AgentLoopBudget::from_run_limits(limits))),
@@ -202,6 +204,14 @@ impl RunTable {
             .runs
             .get(run_id)
             .map(|record| record.cancellation.clone())
+            .ok_or(RunTableError::UnknownRun)
+    }
+
+    pub fn limits(&self, run_id: &RunId) -> Result<RunLimits, RunTableError> {
+        self.lock()?
+            .runs
+            .get(run_id)
+            .map(|record| record.limits)
             .ok_or(RunTableError::UnknownRun)
     }
 
