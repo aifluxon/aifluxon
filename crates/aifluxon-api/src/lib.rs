@@ -11,8 +11,8 @@ mod providers;
 mod result;
 mod run;
 mod stream;
-mod workspace;
 mod web_tools;
+mod workspace;
 
 #[cfg(test)]
 mod engine_tests;
@@ -43,8 +43,8 @@ pub use providers::{
 pub use result::RunResult;
 pub use run::{RunHandle, RunSnapshot};
 pub use stream::{NoopRunEventSink, RunEvent, RunEventEnvelope, RunEventSink, RunEventStream};
-pub use workspace::{EmptyWorkspace, Workspace};
 pub use web_tools::register_deepseek_web_tools;
+pub use workspace::{EmptyWorkspace, Workspace};
 
 pub use aifluxon_core::{
     ArtifactRef, CapabilityId, ContentPart, ContinuationReason, ExecutionAuthority, ImageContent,
