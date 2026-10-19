@@ -2,8 +2,8 @@ use super::chat_completions::{finished_tool_calls, image_is_file_id, usage_value
 use super::tools::descriptor_to_openai_tool;
 use crate::common::{reconcile_terminal_text, TextDeltaReconciler, ToolCallAssembler};
 use aifluxon_core::{
-    ContentPart, Message, MessageRole, ModelEventSink, ModelTurn, ModelTurnRequest, ProviderError,
-    ProviderTerminal, ToolInvocationId,
+    ContentPart, ContinuationReason, Message, MessageRole, ModelEventSink, ModelTurn,
+    ModelTurnRequest, ProviderError, ProviderTerminal, ToolInvocationId,
 };
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -504,6 +504,7 @@ pub struct ResponsesTurnState {
     artifacts: GeneratedArtifactState,
     usage: Option<Value>,
     terminal: Option<ResponsesTerminalStatus>,
+    terminal_event: Option<&'static str>,
     incomplete_reason: Option<String>,
     end_turn: Option<bool>,
     saw_output_done: bool,
@@ -527,6 +528,7 @@ impl ResponsesTurnAssembler {
                 artifacts: GeneratedArtifactState::default(),
                 usage: None,
                 terminal: None,
+                terminal_event: None,
                 incomplete_reason: None,
                 end_turn: None,
                 saw_output_done: false,
@@ -551,6 +553,15 @@ impl ResponsesTurnAssembler {
 
         if let Some(status) = terminal_status(value) {
             self.state.terminal = Some(status);
+            self.state.terminal_event = Some(match value.get("type").and_then(Value::as_str) {
+                Some("response.completed") => "response.completed",
+                Some("response.done") => "response.done",
+                Some("response.incomplete") => "response.incomplete",
+                Some("response.failed") => "response.failed",
+                Some("response.cancelled") => "response.cancelled",
+                Some("error") => "error",
+                _ => "response_snapshot",
+            });
         }
         if value
             .get("type")
@@ -572,8 +583,12 @@ impl ResponsesTurnAssembler {
 
         if self.state.terminal.is_some() {
             let terminal = value.get("response").unwrap_or(value);
-            if let Some(end_turn) = terminal.get("end_turn").and_then(Value::as_bool) {
-                self.state.end_turn = Some(end_turn);
+            if let Some(end_turn) = terminal.get("end_turn").filter(|value| !value.is_null()) {
+                self.state.end_turn = Some(end_turn.as_bool().ok_or_else(|| {
+                    ProviderError::message(
+                        "PROVIDER_MALFORMED_RESPONSE: end_turn must be a boolean.",
+                    )
+                })?);
             }
             if self.state.terminal == Some(ResponsesTerminalStatus::Incomplete) {
                 self.state.incomplete_reason = terminal
@@ -717,6 +732,7 @@ impl ResponsesTurnAssembler {
             }
         }
 
+        let observed_tool_calls = self.state.tools.observed_call_count();
         let tool_calls = finished_tool_calls(self.state.tools);
         let generated_images = self
             .state
@@ -731,11 +747,25 @@ impl ResponsesTurnAssembler {
                 })
             })
             .collect::<Vec<_>>();
+        let diagnostics = json!({
+            "protocol": "responses",
+            "terminal_status": "completed",
+            "terminal_event": self.state.terminal_event,
+            "end_turn": self.state.end_turn,
+            "decoded_tool_calls": tool_calls.len(),
+            "observed_tool_calls": observed_tool_calls,
+            "replay_item_count": self.state.replay.items.len(),
+            "terminal_output_count": self.state.terminal_output_items.len(),
+        });
         Ok(ModelTurn {
             text: self.state.text,
             reasoning: self.state.reasoning,
             terminal: if tool_calls.is_empty() {
-                ProviderTerminal::Stop
+                if self.state.end_turn == Some(false) {
+                    ProviderTerminal::Continue(ContinuationReason::ProviderRequested)
+                } else {
+                    ProviderTerminal::Stop
+                }
             } else {
                 ProviderTerminal::ToolCalls
             },
@@ -743,6 +773,7 @@ impl ResponsesTurnAssembler {
             usage: self.state.usage,
             opaque: json!({
                 "protocol": "responses",
+                "provider_diagnostics": diagnostics,
                 "response_items": self.state.replay.items,
                 "terminal_output": self.state.terminal_output_items,
                 "generated_images": generated_images,

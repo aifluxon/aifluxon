@@ -89,7 +89,7 @@ fn continuation_prompt(reason: ContinuationReason, turn: &ModelTurn) -> Message 
 fn continuation_prompt_text(reason: ContinuationReason, turn: &ModelTurn) -> String {
     match reason {
         ContinuationReason::Incomplete => {
-            "The previous assistant message promised or prepared to inspect, search, read, run, verify, or edit, but it did not include a tool call. Continue the same user request now by calling the necessary tool or tools. Do not restate intent and do not give a final answer until the required tool work is actually complete."
+            "An explicit completion policy requested continuation. Continue the same user request using the available tools as needed."
                 .to_string()
         }
         ContinuationReason::SummaryOnly => {

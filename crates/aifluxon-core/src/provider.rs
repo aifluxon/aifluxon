@@ -139,7 +139,7 @@ pub struct ModelTurnRequest {
 /// so it can apply bounded continuation without provider-name branches.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ContinuationReason {
-    /// Visible text promised unfinished tool work but emitted no tool call.
+    /// An explicit caller policy requested continuation of unfinished work.
     Incomplete,
     /// The remote protocol said this turn is not a valid terminal.
     ProviderRequested,

@@ -1,5 +1,4 @@
 mod chat_completions;
-mod continuation;
 mod decorate;
 #[cfg(test)]
 mod deepseek_tests;
@@ -672,14 +671,9 @@ impl OpenAiCompatibleProvider {
                 .into(),
             );
         }
-        let mut turn = turn.ok_or_else(|| {
+        let turn = turn.ok_or_else(|| {
             ProviderError::message("Provider returned a success status without a model turn.")
         })?;
-        continuation::apply_turn_continuation(
-            self.config.family,
-            !request.tools.is_empty(),
-            &mut turn,
-        );
         reliability::validate_turn(&turn)?;
         Ok(turn)
     }

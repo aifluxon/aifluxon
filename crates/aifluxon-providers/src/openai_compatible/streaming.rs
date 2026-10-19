@@ -244,11 +244,7 @@ impl LiveStreamDecoder {
             OpenAiApiMode::ChatCompletions => self.chat.finish_checked()?,
             OpenAiApiMode::Responses => self.responses.finish_checked()?,
         };
-        // Codex may explicitly request another turn without visible output.
-        // The provider validates again after applying family-specific continuation.
-        if turn.opaque.get("end_turn").and_then(Value::as_bool) != Some(false) {
-            super::reliability::validate_turn(&turn)?;
-        }
+        super::reliability::validate_turn(&turn)?;
         Ok(turn)
     }
 }

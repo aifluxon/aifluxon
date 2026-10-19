@@ -557,7 +557,7 @@ async fn qwen_normal_final_answer_does_not_continue() {
 }
 
 #[tokio::test]
-async fn openai_incomplete_no_tool_turn_continues_when_tools_are_enabled() {
+async fn openai_stop_is_not_reclassified_from_promised_tool_text() {
     let turn = next_turn_for(
         ApiFamily::OpenAi,
         OpenAiApiMode::ChatCompletions,
@@ -565,10 +565,7 @@ async fn openai_incomplete_no_tool_turn_continues_when_tools_are_enabled() {
         request_with("gpt-4.1", Default::default()),
     )
     .await;
-    assert_eq!(
-        turn.terminal,
-        ProviderTerminal::Continue(ContinuationReason::Incomplete)
-    );
+    assert_eq!(turn.terminal, ProviderTerminal::Stop);
 }
 
 #[tokio::test]
@@ -584,7 +581,7 @@ async fn openai_normal_answer_without_tools_does_not_continue() {
 }
 
 #[tokio::test]
-async fn deepseek_promised_tool_text_continues() {
+async fn deepseek_stop_is_not_reclassified_from_promised_tool_text() {
     let turn = next_turn_for(
         ApiFamily::DeepSeek,
         OpenAiApiMode::ChatCompletions,
@@ -592,10 +589,7 @@ async fn deepseek_promised_tool_text_continues() {
         request_with("deepseek-chat", Default::default()),
     )
     .await;
-    assert_eq!(
-        turn.terminal,
-        ProviderTerminal::Continue(ContinuationReason::Incomplete)
-    );
+    assert_eq!(turn.terminal, ProviderTerminal::Stop);
 }
 
 #[tokio::test]
@@ -873,4 +867,34 @@ fn codex_responses_input_preserves_encrypted_reasoning_and_rebuilds_tools() {
     assert_eq!(input[3]["type"], "function_call_output");
     assert_eq!(input[3]["call_id"], "call_1");
     assert_eq!(input[3]["output"], "src/main.ts");
+}
+
+#[tokio::test]
+async fn responses_native_nonterminal_without_visible_text_continues_for_all_families() {
+    for family in [ApiFamily::OpenAi, ApiFamily::DeepSeek, ApiFamily::Codex] {
+        for prefix in [
+            "",
+            "data: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"private thought\"}\n\n",
+        ] {
+            let body = format!("{prefix}data: {{\"type\":\"response.completed\",\"response\":{{\"end_turn\":false}}}}\n\n");
+            let turn = next_turn_for(
+                family,
+                OpenAiApiMode::Responses,
+                OpenAiWireResponse {
+                    status: 200,
+                    content_type: Some("text/event-stream".into()),
+                    chunks: body.bytes().map(|byte| vec![byte]).collect(),
+                },
+                request_with("fixture", Default::default()),
+            )
+            .await;
+            assert_eq!(
+                turn.terminal,
+                ProviderTerminal::Continue(ContinuationReason::ProviderRequested)
+            );
+            assert!(turn.text.is_empty());
+            assert!(turn.tool_calls.is_empty());
+            assert_eq!(turn.opaque["provider_diagnostics"]["end_turn"], false);
+        }
+    }
 }

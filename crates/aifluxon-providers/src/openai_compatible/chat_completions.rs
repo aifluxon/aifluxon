@@ -315,6 +315,7 @@ impl ChatCompletionsTurnAssembler {
     pub fn finish(mut self) -> ModelTurn {
         self.flush_content(&aifluxon_core::NoopModelEventSink);
         let tool_metadata = self.tools.extra_content_by_call_id();
+        let observed_tool_calls = self.tools.observed_call_count();
         let tool_calls = finished_tool_calls(self.tools);
         let terminal = if !tool_calls.is_empty()
             || matches!(
@@ -329,6 +330,12 @@ impl ChatCompletionsTurnAssembler {
         let mut opaque = json!({
             "protocol": "chat_completions",
             "finish_reason": self.finish_reason,
+            "provider_diagnostics": {
+                "protocol": "chat_completions",
+                "terminal_status": self.finish_reason,
+                "decoded_tool_calls": tool_calls.len(),
+                "observed_tool_calls": observed_tool_calls,
+            },
         });
         if !reasoning.is_empty() {
             opaque["reasoning_content"] = json!(reasoning);

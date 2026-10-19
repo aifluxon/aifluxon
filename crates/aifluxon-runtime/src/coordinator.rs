@@ -57,6 +57,15 @@ impl AgentCoordinator {
         self.run_table.consume_model_round(&self.run_id)
     }
 
+    fn handle_model_terminal(&self, turn: &ModelTurn) -> Result<(), ProviderError> {
+        if turn.terminal == ProviderTerminal::Cancelled {
+            self.run_table
+                .cancel(&self.run_id)
+                .map_err(|error| ProviderError::message(error.message()))?;
+        }
+        validate_terminal(turn)
+    }
+
     pub fn consume_tool_invocation(&self) -> Result<(), AgentBudgetExceeded> {
         self.run_table.consume_tool_invocation(&self.run_id)
     }
@@ -125,6 +134,7 @@ impl AgentCoordinator {
                 ProviderError::message(format!("Agent loop budget exceeded: {:?}", error.kind))
             })?;
             let turn = provider.next_turn(request.clone(), sink.clone()).await?;
+            self.handle_model_terminal(&turn)?;
             request.opaque_state = Some(turn.opaque.clone());
             if let Some(reason) = turn.terminal.continuation_reason() {
                 if continuations.try_begin(reason) {
@@ -135,7 +145,7 @@ impl AgentCoordinator {
                     "Model continuation limit reached before the task completed.",
                 ));
             }
-            if turn.tool_calls.is_empty() || turn.terminal != ProviderTerminal::ToolCalls {
+            if turn.terminal == ProviderTerminal::Stop {
                 return Ok(turn);
             }
             continuations.reset_incomplete();
@@ -182,6 +192,7 @@ impl AgentCoordinator {
                 _ = cancellation.cancelled() => return Err(ProviderError::message("Run was cancelled.")),
                 result = provider.next_turn(request.clone(), sink.clone()) => result?,
             };
+            self.handle_model_terminal(&turn)?;
             request.opaque_state = Some(turn.opaque.clone());
             if let Some(reason) = turn.terminal.continuation_reason() {
                 if continuations.try_begin(reason) {
@@ -192,7 +203,7 @@ impl AgentCoordinator {
                     "Model continuation limit reached before the task completed.",
                 ));
             }
-            if turn.tool_calls.is_empty() || turn.terminal != ProviderTerminal::ToolCalls {
+            if turn.terminal == ProviderTerminal::Stop {
                 return Ok(complete_without_tools(request.messages, turn));
             }
 
@@ -459,6 +470,45 @@ fn finish_host_operation(
                 .finish_commit(run_id, &operation_id, result)
         }
     }
+}
+
+// Providers are extensible. Enforce the same terminal contract even when a
+// custom provider does not use the bundled protocol decoders.
+fn validate_terminal(turn: &ModelTurn) -> Result<(), ProviderError> {
+    match turn.terminal {
+        ProviderTerminal::Cancelled => {
+            return Err(ProviderError::message("Run was cancelled."));
+        }
+        ProviderTerminal::Error => {
+            return Err(ProviderError::message(
+                "PROVIDER_TERMINAL_ERROR: Provider ended the model turn with an error.",
+            ));
+        }
+        ProviderTerminal::ToolCalls if !turn.tool_calls.is_empty() => {}
+        ProviderTerminal::Stop | ProviderTerminal::Continue(_) if turn.tool_calls.is_empty() => {
+            return Ok(());
+        }
+        _ => {
+            return Err(ProviderError::message(
+                "PROVIDER_INVALID_TURN: Terminal state does not match the tool calls.",
+            ));
+        }
+    }
+    let mut ids = std::collections::HashSet::new();
+    let mut wire_ids = std::collections::HashSet::new();
+    for call in &turn.tool_calls {
+        if call.name.trim().is_empty()
+            || !call.arguments.is_object()
+            || call.wire_call_id().trim().is_empty()
+            || !ids.insert(call.id)
+            || !wire_ids.insert(call.wire_call_id())
+        {
+            return Err(ProviderError::message(
+                "PROVIDER_INVALID_TOOL_CALL: Tool calls must have a name, object arguments, and unique identifiers.",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn complete_without_tools(mut messages: Vec<Message>, turn: ModelTurn) -> RunExecutionResult {
@@ -770,5 +820,95 @@ mod tests {
         let runs = provider.run_ids.lock().unwrap().clone();
         assert_eq!(keys, vec!["session-a".to_string(), "session-a".to_string()]);
         assert_eq!(runs[0], runs[1]);
+    }
+    struct TerminalProvider(ModelTurn);
+
+    #[async_trait::async_trait]
+    impl ModelProvider for TerminalProvider {
+        fn id(&self) -> &aifluxon_core::ProviderId {
+            static ID: std::sync::OnceLock<aifluxon_core::ProviderId> = std::sync::OnceLock::new();
+            ID.get_or_init(|| aifluxon_core::ProviderId::new("terminal-fixture"))
+        }
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities::openai_compatible()
+        }
+        async fn next_turn(
+            &self,
+            _: ModelTurnRequest,
+            _: Arc<dyn ModelEventSink>,
+        ) -> Result<ModelTurn, ProviderError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn both_loops_reject_error_cancel_and_inconsistent_terminals_before_dispatch() {
+        for (terminal, has_call, code) in [
+            (ProviderTerminal::Error, false, "PROVIDER_TERMINAL_ERROR:"),
+            (ProviderTerminal::Cancelled, false, "Run was cancelled."),
+            (ProviderTerminal::ToolCalls, false, "PROVIDER_INVALID_TURN:"),
+            (ProviderTerminal::Stop, true, "PROVIDER_INVALID_TURN:"),
+            (
+                ProviderTerminal::Continue(aifluxon_core::ContinuationReason::ProviderRequested),
+                true,
+                "PROVIDER_INVALID_TURN:",
+            ),
+        ] {
+            let provider = Arc::new(TerminalProvider(ModelTurn {
+                text: "visible text must not hide an invalid terminal".into(),
+                reasoning: String::new(),
+                usage: None,
+                terminal,
+                opaque: serde_json::json!({}),
+                tool_calls: if has_call {
+                    vec![ToolCall {
+                        id: ToolInvocationId::new(),
+                        name: "unregistered".into(),
+                        arguments: serde_json::json!({}),
+                        provider_call_id: Some("call-1".into()),
+                    }]
+                } else {
+                    vec![]
+                },
+            }));
+            let simple = AgentCoordinator::new();
+            let error = simple
+                .run_model_tool_loop(provider.as_ref(), continuation_request(), |_| {
+                    panic!("invalid turn must never dispatch a tool")
+                })
+                .await
+                .unwrap_err();
+            assert!(error.message.starts_with(code), "{error}");
+            assert_eq!(simple.model_rounds(), 1);
+            let registered = AgentCoordinator::new();
+            let error = registered
+                .run_registered_model_tool_loop(
+                    provider,
+                    Arc::new(ToolRegistry::new()),
+                    Arc::new(crate::AllowAllToolPolicy),
+                    ExecutionAuthority {
+                        permission_mode: aifluxon_core::PermissionMode::Default,
+                        filesystem_scope: aifluxon_core::AgentFilesystemScope::Workspace,
+                        capabilities: Default::default(),
+                    },
+                    continuation_request(),
+                    Arc::new(NoopModelEventSink),
+                )
+                .await
+                .unwrap_err();
+            assert!(error.message.starts_with(code), "{error}");
+            assert_eq!(registered.model_rounds(), 1);
+            assert_eq!(registered.execution_count(), 0);
+            if terminal == ProviderTerminal::Cancelled {
+                assert_eq!(
+                    registered
+                        .run_table
+                        .snapshot(&registered.run_id)
+                        .unwrap()
+                        .state,
+                    aifluxon_core::RunState::Cancelled
+                );
+            }
+        }
     }
 }

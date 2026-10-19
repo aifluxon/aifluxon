@@ -247,3 +247,44 @@ fn conflicting_responses_terminal_and_incomplete_json_are_rejected() {
             .starts_with("PROVIDER_OUTPUT_LIMIT:")
     );
 }
+
+#[test]
+fn responses_rejects_non_boolean_native_end_turn() {
+    let source = event(json!({"type":"response.completed", "response":{
+        "status":"completed", "end_turn":"false", "output":[{
+            "type":"message", "content":[{"type":"output_text", "text":"visible"}]
+        }]
+    }}));
+    let mut decoder = OpenAiStreamDecoder::new(
+        OpenAiApiMode::Responses,
+        false,
+        Some("text/event-stream".into()),
+    );
+    let error = decoder
+        .push(source.as_bytes(), &NoopModelEventSink)
+        .unwrap_err();
+    assert!(error.message.starts_with("PROVIDER_MALFORMED_RESPONSE:"));
+}
+
+#[test]
+fn wire_diagnostics_contain_only_termination_facts_and_counts() {
+    for mode in [OpenAiApiMode::Responses, OpenAiApiMode::ChatCompletions] {
+        let mut decoder = OpenAiStreamDecoder::new(mode, false, Some("text/event-stream".into()));
+        decoder
+            .push(
+                tool(mode, r#"{"private_argument":"do-not-log"}"#, true).as_bytes(),
+                &NoopModelEventSink,
+            )
+            .unwrap();
+        let turn = decoder.finish(&NoopModelEventSink).unwrap();
+        let diagnostic = &turn.opaque["provider_diagnostics"];
+        assert_eq!(diagnostic["decoded_tool_calls"], 1);
+        assert_eq!(diagnostic["observed_tool_calls"], 1);
+        assert!(!diagnostic.to_string().contains("do-not-log"));
+        if mode == OpenAiApiMode::Responses {
+            assert_eq!(diagnostic["terminal_event"], "response.completed");
+        } else {
+            assert_eq!(diagnostic["terminal_status"], "tool_calls");
+        }
+    }
+}

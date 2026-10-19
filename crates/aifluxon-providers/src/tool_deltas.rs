@@ -29,6 +29,10 @@ pub struct ToolCallAssembler {
 }
 
 impl ToolCallAssembler {
+    pub(crate) fn observed_call_count(&self) -> usize {
+        self.calls.iter().filter(|call| call.observed).count()
+    }
+
     pub(crate) fn use_gemini_contract(&mut self) {
         self.gemini_contract = true;
         self.metadata_snapshots = true;
