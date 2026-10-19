@@ -63,7 +63,32 @@ impl AgentCoordinator {
                 .cancel(&self.run_id)
                 .map_err(|error| ProviderError::message(error.message()))?;
         }
-        validate_terminal(turn)
+        let result = validate_terminal(turn);
+        tracing::info!(
+            category = "agent",
+            component = "agent.runtime",
+            event_code = "MODEL_TURN_DECISION",
+            run_id = self.run_id.hyphenated().as_str(),
+            model_round = self.model_rounds(),
+            tool_call_count = turn.tool_calls.len(),
+            outcome = if result.is_ok() {
+                "validated"
+            } else {
+                "rejected"
+            },
+            next_action = if result.is_err() {
+                "fail_or_cancel"
+            } else {
+                match turn.terminal {
+                    ProviderTerminal::Stop => "complete_response",
+                    ProviderTerminal::ToolCalls => "execute_tools",
+                    ProviderTerminal::Continue(_) => "continue_model",
+                    _ => "fail_or_cancel",
+                }
+            },
+            "Runtime settled the provider terminal state"
+        );
+        result
     }
 
     pub fn consume_tool_invocation(&self) -> Result<(), AgentBudgetExceeded> {

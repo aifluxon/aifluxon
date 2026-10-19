@@ -2,6 +2,7 @@ mod chat_completions;
 mod decorate;
 #[cfg(test)]
 mod deepseek_tests;
+mod diagnostics;
 #[cfg(test)]
 mod family_tests;
 #[cfg(test)]
@@ -27,6 +28,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 use streaming::LiveStreamDecoder;
+use tracing::Instrument;
 
 pub use chat_completions::{build_chat_completions_body, ChatCompletionsTurnAssembler};
 pub use decorate::effective_api_mode;
@@ -445,11 +447,32 @@ impl OpenAiCompatibleProvider {
         turn_state: Option<&str>,
         sink: Arc<dyn ModelEventSink>,
     ) -> Result<(u16, String, Option<ModelTurn>, Option<Duration>), ProviderError> {
-        let (head, mut chunks) = self
+        let mut diagnostics = diagnostics::StreamDiagnostics::new(mode);
+        tracing::info!(
+            category = "agent",
+            component = "agent.provider",
+            event_code = "PROVIDER_REQUEST_STARTED",
+            outcome = "started",
+            "Provider HTTP exchange started"
+        );
+        let response = self
             .transport
             .stream(self.wire_request(mode, body, token, session_key, turn_state)?)
-            .await?;
+            .await;
+        let (head, mut chunks) = match response {
+            Ok(response) => response,
+            Err(error) => {
+                diagnostics.fail(&error);
+                return Err(error);
+            }
+        };
+        diagnostics.headers(
+            head.status,
+            head.content_type.as_deref(),
+            head.retry_after.map(|delay| delay.as_millis() as u64),
+        );
         if !(200..300).contains(&head.status) {
+            diagnostics.http_error();
             // These statuses need no response text. Do not wait for an error
             // body's EOF before refreshing credentials or respecting backoff.
             if head.status == 401 || crate::common::is_retryable_http_status(head.status) {
@@ -457,7 +480,14 @@ impl OpenAiCompatibleProvider {
             }
             let mut raw = Vec::new();
             while let Some(chunk) = chunks.next().await {
-                let chunk = chunk?;
+                let chunk = match chunk {
+                    Ok(chunk) => chunk,
+                    Err(error) => {
+                        diagnostics.fail(&error);
+                        return Err(error);
+                    }
+                };
+                diagnostics.chunk(chunk.len());
                 raw.extend_from_slice(&chunk[..chunk.len().min(4096 - raw.len())]);
                 if raw.len() >= 4096 {
                     break;
@@ -471,8 +501,12 @@ impl OpenAiCompatibleProvider {
             ));
         }
         let (sink, kimi_think) = self.wrap_family_sink(sink);
-        let mut decoder =
-            LiveStreamDecoder::new(mode, self.config.allow_cumulative_delta, head.content_type);
+        let mut decoder = LiveStreamDecoder::with_diagnostics(
+            mode,
+            self.config.allow_cumulative_delta,
+            head.content_type,
+            diagnostics,
+        );
         if self.config.family == ApiFamily::DeepSeek {
             decoder = decoder.with_deepseek_contract();
         }
@@ -480,7 +514,14 @@ impl OpenAiCompatibleProvider {
             decoder = decoder.with_gemini_contract();
         }
         while let Some(chunk) = chunks.next().await {
-            let applied = decoder.push(&chunk?, sink.as_ref())?;
+            let chunk = match chunk {
+                Ok(chunk) => chunk,
+                Err(error) => {
+                    decoder.record_failure(&error);
+                    return Err(error);
+                }
+            };
+            let applied = decoder.push(&chunk, sink.as_ref())?;
             if decoder.is_complete() {
                 break;
             }
@@ -514,6 +555,8 @@ impl OpenAiCompatibleProvider {
         let mut token = self.resolve_bearer(false).await?;
         let mut retried = false;
         loop {
+            let exchange = tracing::info_span!("provider_http_exchange",
+                wire_request_id = %uuid::Uuid::new_v4(), auth_attempt = if retried { 2_u64 } else { 1_u64 });
             let streamed = self
                 .stream_turn(
                     mode,
@@ -523,6 +566,7 @@ impl OpenAiCompatibleProvider {
                     turn_state,
                     sink.clone(),
                 )
+                .instrument(exchange)
                 .await
                 .map_err(|error| {
                     ProviderError::message(crate::common::sanitize_provider_error(
@@ -557,9 +601,17 @@ impl ModelProvider for OpenAiCompatibleProvider {
     ) -> Result<ModelTurn, ProviderError> {
         for attempt in 0..3 {
             let attempt_sink = Arc::new(reliability::AttemptSink::new(sink.clone()));
+            let span = tracing::info_span!(
+                "provider_model_attempt",
+                run_id = request.run_id.hyphenated().as_str(),
+                provider = self.config.provider_id.as_str(),
+                model = request.model.as_str(),
+                attempt = attempt + 1
+            );
             let outcome = tokio::time::timeout(
                 Duration::from_secs(15 * 60),
-                self.next_turn_once(&request, attempt_sink.clone()),
+                self.next_turn_once(&request, attempt_sink.clone())
+                    .instrument(span),
             )
             .await
             .unwrap_or_else(|_| {
@@ -591,6 +643,9 @@ impl ModelProvider for OpenAiCompatibleProvider {
                         model = request.model.as_str(),
                         run_id = request.run_id.hyphenated().as_str(),
                         attempt = attempt + 1,
+                        failure_kind = diagnostics::failure_code(&error),
+                        partial_output_seen = attempt_sink.has_visible_output(),
+                        retry_delay_ms = if retry { delay.as_millis() as u64 } else { 0 },
                         retry,
                         outcome = if retry { "retrying" } else { "failed" },
                         error_code = if reliability::retryable_error(&error) {
@@ -626,6 +681,22 @@ impl OpenAiCompatibleProvider {
         };
         decorate::decorate_turn_body(&mut body, &self.config, mode, &request);
         validate_deepseek_request_body_size(&self.config, &request, &body)?;
+        tracing::info!(
+            category = "agent",
+            component = "agent.provider",
+            event_code = "PROVIDER_REQUEST_PREPARED",
+            outcome = "prepared",
+            api_mode = match mode {
+                OpenAiApiMode::Responses => "responses",
+                OpenAiApiMode::ChatCompletions => "chat_completions",
+            },
+            message_count = request.messages.len(),
+            tool_definition_count = request.tools.len(),
+            serialized_bytes = body.to_string().len(),
+            hosted_web_search = request.features.web_search,
+            hosted_image_generation = request.features.image_generation,
+            "Provider generation request prepared"
+        );
         let mut streamed = self
             .stream_turn_with_auth(mode, body, &request, sink.clone())
             .await?;

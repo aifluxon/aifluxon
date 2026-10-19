@@ -8,6 +8,7 @@ publish = false
 description = "Agent run orchestration, budgets, tools, and pending operations"
 
 [dependencies]
+tracing = "0.1"
 async-trait.workspace = true
 aifluxon-core = { path = "../aifluxon-core" }
 atomicwrites = "0.4"

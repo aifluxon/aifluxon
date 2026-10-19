@@ -1,4 +1,5 @@
 use super::chat_completions::ChatCompletionsTurnAssembler;
+use super::diagnostics::StreamDiagnostics;
 use super::responses::ResponsesTurnAssembler;
 use super::{OpenAiApiMode, OpenAiWireResponse};
 use crate::common::{IncrementalSseParser, SseEvent};
@@ -73,6 +74,7 @@ pub struct LiveStreamDecoder {
     chat: ChatCompletionsTurnAssembler,
     responses: ResponsesTurnAssembler,
     complete: bool,
+    diagnostics: StreamDiagnostics,
 }
 
 impl LiveStreamDecoder {
@@ -80,6 +82,20 @@ impl LiveStreamDecoder {
         mode: OpenAiApiMode,
         allow_cumulative_delta: bool,
         content_type: Option<String>,
+    ) -> Self {
+        Self::with_diagnostics(
+            mode,
+            allow_cumulative_delta,
+            content_type,
+            StreamDiagnostics::new(mode),
+        )
+    }
+
+    pub(super) fn with_diagnostics(
+        mode: OpenAiApiMode,
+        allow_cumulative_delta: bool,
+        content_type: Option<String>,
+        diagnostics: StreamDiagnostics,
     ) -> Self {
         Self {
             mode,
@@ -91,6 +107,7 @@ impl LiveStreamDecoder {
             chat: ChatCompletionsTurnAssembler::new(allow_cumulative_delta),
             responses: ResponsesTurnAssembler::new(allow_cumulative_delta),
             complete: false,
+            diagnostics,
         }
     }
 
@@ -109,6 +126,24 @@ impl LiveStreamDecoder {
     }
 
     pub fn push(
+        &mut self,
+        chunk: &[u8],
+        sink: &dyn ModelEventSink,
+    ) -> Result<usize, ProviderError> {
+        self.diagnostics.chunk(chunk.len());
+        let result = self.push_chunk(chunk, sink);
+        self.diagnostics.decoded_complete(self.complete);
+        if let Err(error) = &result {
+            self.diagnostics.fail(error);
+        }
+        result
+    }
+
+    pub(super) fn record_failure(&mut self, error: &ProviderError) {
+        self.diagnostics.fail(error);
+    }
+
+    fn push_chunk(
         &mut self,
         chunk: &[u8],
         sink: &dyn ModelEventSink,
@@ -156,6 +191,7 @@ impl LiveStreamDecoder {
                 break;
             }
             if event.is_done() {
+                self.diagnostics.done();
                 self.complete = true;
                 break;
             }
@@ -165,6 +201,7 @@ impl LiveStreamDecoder {
                         "PROVIDER_MALFORMED_RESPONSE: Invalid JSON in a stream event.",
                     )
                 })?;
+                self.diagnostics.observe(&value);
                 if value.get("error").is_some_and(|error| !error.is_null())
                     || event.event.as_deref() == Some("error")
                 {
@@ -211,6 +248,8 @@ impl LiveStreamDecoder {
         if self.sse == Some(true) {
             // An unterminated SSE tail is truncation, never an executable tool call.
             if !self.complete {
+                self.diagnostics
+                    .fail(&ProviderError::message("PROVIDER_STREAM_CLOSED:"));
                 return Err(ProviderError::message(
                     "PROVIDER_STREAM_CLOSED: Stream ended before its terminal event.",
                 ));
@@ -219,33 +258,49 @@ impl LiveStreamDecoder {
             return self.finish_turn();
         }
         if self.raw.is_empty() {
+            self.diagnostics
+                .fail(&ProviderError::message("PROVIDER_EMPTY_RESPONSE:"));
             return Err(ProviderError::message(
                 "PROVIDER_EMPTY_RESPONSE: Provider returned an empty body.",
             ));
         }
         let value = serde_json::from_slice::<Value>(&self.raw).map_err(|_| {
-            ProviderError::message("PROVIDER_MALFORMED_RESPONSE: Provider returned invalid JSON.")
+            let error = ProviderError::message(
+                "PROVIDER_MALFORMED_RESPONSE: Provider returned invalid JSON.",
+            );
+            self.diagnostics.fail(&error);
+            error
         })?;
+        self.diagnostics.observe(&value);
         if value.get("error").is_some_and(|error| !error.is_null()) {
+            self.diagnostics
+                .fail(&ProviderError::message("PROVIDER_FINISH_ERROR:"));
             return Err(ProviderError::message(
                 "PROVIDER_FINISH_ERROR: Provider returned a response error.",
             ));
         }
         match self.mode {
             OpenAiApiMode::ChatCompletions => self.chat.apply_value(&value, sink),
-            OpenAiApiMode::Responses => self.responses.apply_value(&value, sink)?,
+            OpenAiApiMode::Responses => self
+                .responses
+                .apply_value(&value, sink)
+                .inspect_err(|error| self.diagnostics.fail(error))?,
         }
         self.chat.flush_content(sink);
         self.finish_turn()
     }
 
-    fn finish_turn(self) -> Result<ModelTurn, ProviderError> {
-        let turn = match self.mode {
-            OpenAiApiMode::ChatCompletions => self.chat.finish_checked()?,
-            OpenAiApiMode::Responses => self.responses.finish_checked()?,
-        };
-        super::reliability::validate_turn(&turn)?;
-        Ok(turn)
+    fn finish_turn(mut self) -> Result<ModelTurn, ProviderError> {
+        let result = (|| {
+            let turn = match self.mode {
+                OpenAiApiMode::ChatCompletions => self.chat.finish_checked()?,
+                OpenAiApiMode::Responses => self.responses.finish_checked()?,
+            };
+            super::reliability::validate_turn(&turn)?;
+            Ok(turn)
+        })();
+        self.diagnostics.finish(&result);
+        result
     }
 }
 
