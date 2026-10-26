@@ -2,6 +2,32 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+
+from .messages import Message
+
+
+@dataclass(frozen=True, slots=True)
+class SessionRecord:
+    id: str
+    revision: int
+    created_at: int
+    updated_at: int
+    messages: tuple[Message, ...]
+
+    @property
+    def message_count(self) -> int:
+        return len(self.messages)
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> SessionRecord:
+        return cls(
+            id=value["id"],
+            revision=value["revision"],
+            created_at=value["created_at"],
+            updated_at=value["updated_at"],
+            messages=tuple(Message.from_dict(message) for message in value["messages"]),
+        )
 
 
 class SessionStore:

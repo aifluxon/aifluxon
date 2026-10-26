@@ -227,7 +227,10 @@ fn register_custom(
         spec.get("api_mode").and_then(Value::as_str),
         OpenAiApiMode::ChatCompletions,
     )?;
-    let config = custom::config(ProviderId::new(provider_id), base_url, api_key, api_mode);
+    let mut config = custom::config(ProviderId::new(provider_id), base_url, api_key, api_mode);
+    if let Some(cumulative) = spec.get("allow_cumulative_delta").and_then(Value::as_bool) {
+        config.allow_cumulative_delta = cumulative;
+    }
     let id = ProviderId::new(provider_id);
     registry
         .register(id.clone(), OpenAiCompatibleProvider::configured(config))

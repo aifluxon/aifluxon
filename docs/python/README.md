@@ -51,6 +51,7 @@ asyncio.run(main())
 
 - [Quick Start](quickstart.md)
 - [API Reference](api-reference.md)
+- [Run options and Rust parity](run-options.md)
 - [Providers](providers.md)
 - [Sessions](sessions.md)
 - [Events](events.md)

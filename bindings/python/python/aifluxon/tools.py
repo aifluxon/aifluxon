@@ -1,11 +1,32 @@
 from __future__ import annotations
 
 import inspect
-import json
 import types
 from collections.abc import Callable
+from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Union, get_args, get_origin, get_type_hints
+from typing import (
+    Annotated,
+    Any,
+    Literal,
+    NotRequired,
+    Required,
+    Union,
+    get_args,
+    get_origin,
+    get_type_hints,
+    is_typeddict,
+)
+
+from .input import PromptInput
+
+
+@dataclass(frozen=True, slots=True)
+class ToolResult:
+    """Separate event value from ordered text/image content sent to the model."""
+
+    value: Any
+    content: PromptInput | None = None
 
 
 class ToolEffect(str, Enum):
@@ -23,7 +44,9 @@ class ToolEffect(str, Enum):
 class AllowAllPolicy:
     """Policy that allows every registered tool."""
 
-    def evaluate(self, name: str, arguments: dict[str, Any], effect: str) -> dict[str, Any]:
+    def evaluate(
+        self, name: str, arguments: dict[str, Any], effect: str
+    ) -> dict[str, Any]:
         return {"decision": "allow"}
 
 
@@ -41,7 +64,9 @@ class RequireApprovalPolicy:
         self.mode = mode
         self.effects = effects
 
-    def evaluate(self, name: str, arguments: dict[str, Any], effect: str) -> dict[str, Any]:
+    def evaluate(
+        self, name: str, arguments: dict[str, Any], effect: str
+    ) -> dict[str, Any]:
         if self.effects is not None and ToolEffect(effect) not in self.effects:
             return {"decision": "allow"}
         return {
@@ -60,15 +85,29 @@ def tool(
     effect: ToolEffect | str = ToolEffect.UNKNOWN,
     parallel_safe: bool = False,
     required_capabilities: list[str] | None = None,
+    input_schema: dict[str, Any] | None = None,
 ) -> Any:
     def decorate(func: Callable[..., Any]) -> Callable[..., Any]:
+        for parameter in inspect.signature(func).parameters.values():
+            if parameter.kind in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.VAR_POSITIONAL,
+                inspect.Parameter.VAR_KEYWORD,
+            ):
+                raise TypeError(
+                    f"Tool `{func.__name__}` requires explicit keyword-compatible parameters."
+                )
+        if input_schema is not None and not isinstance(input_schema, dict):
+            raise TypeError("input_schema must be a JSON Schema object.")
         func.__aifluxon_tool__ = {  # type: ignore[attr-defined]
             "name": name or func.__name__,
             "description": description or (inspect.getdoc(func) or "").strip(),
             "effect": ToolEffect(effect).value,
             "parallel_safe": parallel_safe,
             "required_capabilities": list(required_capabilities or []),
-            "input_schema": schema_from_callable(func),
+            "input_schema": input_schema
+            if input_schema is not None
+            else schema_from_callable(func),
         }
         return func
 
@@ -78,41 +117,98 @@ def tool(
 
 
 def schema_from_callable(fn: Callable[..., Any]) -> dict[str, Any]:
-    hints = get_type_hints(fn)
+    hints = get_type_hints(fn, include_extras=True)
     signature = inspect.signature(fn)
     properties: dict[str, Any] = {}
     required: list[str] = []
     for parameter in signature.parameters.values():
-        if parameter.kind in (
-            inspect.Parameter.VAR_POSITIONAL,
-            inspect.Parameter.VAR_KEYWORD,
-        ):
-            raise TypeError(
-                f"Tool `{fn.__name__}` cannot use *args/**kwargs; annotate explicit parameters."
-            )
         annotation = hints.get(parameter.name, parameter.annotation)
         if annotation is inspect.Signature.empty:
             raise TypeError(
                 f"Tool `{fn.__name__}` parameter `{parameter.name}` requires a type annotation."
             )
-        properties[parameter.name] = annotation_to_schema(annotation, fn.__name__, parameter.name)
+        properties[parameter.name] = annotation_to_schema(
+            annotation, fn.__name__, parameter.name
+        )
         if parameter.default is inspect.Parameter.empty:
             required.append(parameter.name)
-    schema: dict[str, Any] = {"type": "object", "properties": properties}
+    schema: dict[str, Any] = {
+        "type": "object",
+        "properties": properties,
+        "additionalProperties": False,
+    }
     if required:
         schema["required"] = required
     return schema
 
 
 def annotation_to_schema(annotation: Any, tool_name: str, field: str) -> dict[str, Any]:
+    if annotation is Any:
+        return {}
+    if annotation is type(None):
+        return {"type": "null"}
+    if is_typeddict(annotation):
+        hints = get_type_hints(annotation, include_extras=True)
+        required = set(annotation.__required_keys__)
+        for name, hint in hints.items():
+            if get_origin(hint) is NotRequired:
+                required.discard(name)
+            elif get_origin(hint) is Required:
+                required.add(name)
+        return {
+            "type": "object",
+            "properties": {
+                name: annotation_to_schema(hint, tool_name, f"{field}.{name}")
+                for name, hint in hints.items()
+            },
+            "required": sorted(required),
+            "additionalProperties": False,
+        }
+    if isinstance(annotation, type) and issubclass(annotation, Enum):
+        values = [member.value for member in annotation]
+        if any(
+            value is not None and type(value) not in (str, int, float, bool)
+            for value in values
+        ):
+            raise TypeError(f"Tool `{tool_name}` Enum values must be JSON scalars.")
+        schema = (
+            annotation_to_schema(type(values[0]), tool_name, field)
+            if values and len({type(value) for value in values}) == 1
+            else {}
+        )
+        return {**schema, "enum": values}
     origin = get_origin(annotation)
     if origin is None:
         return _simple_schema(annotation, tool_name, field)
     args = get_args(annotation)
+    if origin is Annotated:
+        schema = annotation_to_schema(args[0], tool_name, field)
+        for metadata in args[1:]:
+            if isinstance(metadata, str):
+                schema["description"] = metadata
+            elif isinstance(metadata, dict):
+                schema.update(metadata)
+        return schema
+    if origin is Literal:
+        values = list(args)
+        if any(
+            value is not None and type(value) not in (str, int, float, bool)
+            for value in values
+        ):
+            raise TypeError(f"Tool `{tool_name}` Literal values must be JSON scalars.")
+        return {"enum": values}
+    # Required/NotRequired only affect the containing TypedDict's required keys.
+    if origin in (NotRequired, Required):
+        return annotation_to_schema(args[0], tool_name, field)
     if origin is list:
         if len(args) != 1:
-            raise TypeError(f"Tool `{tool_name}` parameter `{field}` list annotation is unsupported.")
-        return {"type": "array", "items": annotation_to_schema(args[0], tool_name, field)}
+            raise TypeError(
+                f"Tool `{tool_name}` parameter `{field}` list annotation is unsupported."
+            )
+        return {
+            "type": "array",
+            "items": annotation_to_schema(args[0], tool_name, field),
+        }
     if origin is dict:
         if len(args) != 2 or args[0] is not str:
             raise TypeError(
@@ -122,19 +218,11 @@ def annotation_to_schema(annotation: Any, tool_name: str, field: str) -> dict[st
             "type": "object",
             "additionalProperties": annotation_to_schema(args[1], tool_name, field),
         }
-    if _is_optional(origin, args):
-        non_none = [arg for arg in args if arg is not type(None)]
-        if len(non_none) != 1:
-            raise TypeError(f"Tool `{tool_name}` parameter `{field}` Union is unsupported.")
-        schema = annotation_to_schema(non_none[0], tool_name, field)
-        return schema
+    if origin in (Union, types.UnionType):
+        return {"anyOf": [annotation_to_schema(arg, tool_name, field) for arg in args]}
     raise TypeError(
         f"Tool `{tool_name}` parameter `{field}` uses unsupported type `{annotation!r}`."
     )
-
-
-def _is_optional(origin: Any, args: tuple[Any, ...]) -> bool:
-    return origin in (Union, types.UnionType) and type(None) in args
 
 
 def _simple_schema(annotation: Any, tool_name: str, field: str) -> dict[str, Any]:

@@ -6,7 +6,7 @@ async for event in run.events():
     ...
 ```
 
-Events are bridged from the Rust run stream through a bounded queue (capacity 128). Python does not install a per-token GIL callback.
+Events are bridged from the Rust stream by a background task. Python does not install a per-token GIL callback. Python buffers unread events in memory without blocking result completion.
 
 ## Ordering
 
@@ -16,7 +16,9 @@ Events are bridged from the Rust run stream through a bounded queue (capacity 12
 
 ## Slow consumers
 
-The native forwarder applies backpressure on the bounded channel. A slow iterator delays event delivery; it does not reset sequence numbers.
+The native forwarder retains its bounded channel. Python continuously drains it, so a slow or absent Python iterator does not stop the run. Unread events consume memory until consumed or the Run is released. Consume events during long runs to avoid retaining the full unread stream.
+
+Only one iterator may consume a Run at a time; a second concurrent iterator raises `RuntimeError`. After exhaustion, another `events()` call finishes immediately. Events may be consumed after `result()` completes.
 
 ## Consumer drop
 

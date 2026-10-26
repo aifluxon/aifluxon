@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass(frozen=True, slots=True)
 class ProviderConfig:
     kind: str
     model: str
-    api_key: str | None = None
+    api_key: str | None = field(default=None, repr=False)
     base_url: str | None = None
     api_mode: str | None = None
     provider_id: str | None = None
@@ -36,6 +37,28 @@ class ProviderConfig:
         if self.delay_ms is not None:
             spec["delay_ms"] = self.delay_ms
         return spec
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderCapabilities:
+    """Declared Rust provider capabilities; upstream model support may differ."""
+
+    supports_remote_conversation: bool
+    supports_prompt_cache_key: bool
+    supports_reasoning_stream: bool
+    supports_parallel_tool_calls: bool
+    supports_hosted_tools: bool
+    supports_images: bool
+    supports_web_search: bool
+    supports_session_restore: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DeepSeekWebTools:
+    """Register Rust's web_search/web_fetch tools with any model provider."""
+
+    api_key: str = field(repr=False)
+    base_url: str = "https://api.deepseek.com"
 
 
 def OpenAI(
@@ -141,6 +164,7 @@ def Custom(
     api_key: str = "",
     provider_id: str = "custom",
     api_mode: str | None = None,
+    allow_cumulative_delta: bool | None = None,
 ) -> ProviderConfig:
     return ProviderConfig(
         kind="custom",
@@ -149,6 +173,7 @@ def Custom(
         base_url=base_url,
         api_mode=api_mode,
         provider_id=provider_id,
+        allow_cumulative_delta=allow_cumulative_delta,
     )
 
 

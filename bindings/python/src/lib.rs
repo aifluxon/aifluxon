@@ -1,14 +1,15 @@
 use aifluxon_api::{
-    envelope_to_json, operation_snapshot_to_json, register_provider_from_json,
-    unlock_encrypted_store, user_content_request_with_system, Aifluxon, AifluxonAuthError,
-    AifluxonError, AifluxonErrorKind, AllowAllToolPolicy, CodexAuth, CodexLoginAttempt,
-    CodexProviderHandle, ContentPart, EncryptedFileSecretStore, ImageContent,
-    JsonFileProviderStateStore, JsonFileSessionStore, MemorySecretStore, NoopRunEventSink,
-    OperationDecision, OperationId, OperationMode, PendingOperationDraft, ProviderBinding,
-    ProviderFeatureRequest, ProviderRegistry, RunHandle, RunId, RunLimits, RunSnapshot, SessionId,
-    SystemKeyringStore, ToolDecision, ToolDescriptor, ToolEffect, ToolExecutionContext,
-    ToolExecutionError, ToolExecutor, ToolInvocation, ToolPolicy, ToolPolicyInput, ToolRegistry,
-    ToolResult, DEFAULT_SERVICE_NAME,
+    envelope_to_json, operation_snapshot_to_json, register_deepseek_web_tools,
+    register_provider_from_json, unlock_encrypted_store, user_content_request_with_system,
+    AgentFilesystemScope, Aifluxon, AifluxonAuthError, AifluxonError, AifluxonErrorKind,
+    CapabilityId, CodexAuth, CodexLoginAttempt, CodexProviderHandle, ContentPart,
+    EncryptedFileSecretStore, ExecutionAuthority, ImageContent, JsonFileProviderStateStore,
+    JsonFileSessionStore, MemorySecretStore, Message, ModelRef, NoopRunEventSink,
+    OperationDecision, OperationId, OperationMode, PendingOperationDraft, PermissionMode,
+    ProviderBinding, ProviderFeatureRequest, ProviderRegistry, ProviderSessionKey, RunHandle,
+    RunId, RunLimits, RunRequest, RunSnapshot, SessionId, SystemKeyringStore, ToolDecision,
+    ToolDescriptor, ToolEffect, ToolExecutionContext, ToolExecutionError, ToolExecutor,
+    ToolInvocation, ToolPolicy, ToolPolicyInput, ToolRegistry, ToolResult, DEFAULT_SERVICE_NAME,
 };
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -31,6 +32,7 @@ struct NativeAgent {
     binding: ProviderBinding,
     limits: RunLimits,
     tools: Arc<ToolRegistry>,
+    registry: Arc<ProviderRegistry>,
     runs: Mutex<HashMap<String, Arc<AsyncMutex<RunHandle>>>>,
 }
 
@@ -46,7 +48,7 @@ impl NativeAgent {
         max_tool_invocations: u32,
         oauth_provider: Option<&NativeCodexProvider>,
     ) -> PyResult<Self> {
-        let registry = ProviderRegistry::new();
+        let registry = Arc::new(ProviderRegistry::new());
         let binding = if let Some(oauth) = oauth_provider {
             oauth.inner.register(&registry).map_err(map_error)?
         } else {
@@ -54,12 +56,11 @@ impl NativeAgent {
             register_provider_from_json(&registry, &spec).map_err(map_error)?
         };
         let tools = Arc::new(ToolRegistry::new());
-        let policy: Arc<dyn ToolPolicy> = match policy_callback {
-            Some(callback) => Arc::new(PythonToolPolicy { callback }),
-            None => Arc::new(AllowAllToolPolicy),
-        };
+        let policy: Arc<dyn ToolPolicy> = Arc::new(PythonToolPolicy {
+            callback: policy_callback,
+        });
         let mut builder = Aifluxon::builder()
-            .provider_registry(registry)
+            .provider_registry(registry.clone())
             .tool_registry(tools.clone())
             .tool_policy(policy)
             .event_sink(Arc::new(NoopRunEventSink));
@@ -80,6 +81,7 @@ impl NativeAgent {
                 max_tool_invocations,
             },
             tools,
+            registry,
             runs: Mutex::new(HashMap::new()),
         })
     }
@@ -90,6 +92,94 @@ impl NativeAgent {
 
     fn model(&self) -> String {
         self.binding.model.clone()
+    }
+
+    fn capabilities(&self) -> PyResult<String> {
+        let provider = self
+            .registry
+            .resolve_required(&self.binding.provider_id)
+            .map_err(invalid_config)?;
+        let caps = provider.capabilities();
+        Ok(json!({
+            "supports_remote_conversation": caps.supports_remote_conversation,
+            "supports_prompt_cache_key": caps.supports_prompt_cache_key,
+            "supports_reasoning_stream": caps.supports_reasoning_stream,
+            "supports_parallel_tool_calls": caps.supports_parallel_tool_calls,
+            "supports_hosted_tools": caps.supports_hosted_tools,
+            "supports_images": caps.supports_images,
+            "supports_web_search": caps.supports_web_search,
+            "supports_session_restore": caps.supports_session_restore,
+        })
+        .to_string())
+    }
+
+    fn register_web_tools(&self, base_url: &str, api_key: &str) -> PyResult<()> {
+        // Reject collisions before registering either tool.
+        for name in ["web_search", "web_fetch"] {
+            if self.tools.contains(name) {
+                return Err(invalid_config(format!(
+                    "Tool `{name}` is already registered."
+                )));
+            }
+        }
+        register_deepseek_web_tools(&self.tools, base_url, api_key).map_err(invalid_config)
+    }
+
+    fn tool_descriptors(&self) -> PyResult<String> {
+        Ok(json!(self.tools.descriptors().iter().map(|descriptor| json!({
+            "name": descriptor.name,
+            "description": descriptor.description,
+            "input_schema": descriptor.input_schema,
+            "effect": effect_name(descriptor.effect),
+            "parallel_safe": descriptor.parallel_safe,
+            "required_capabilities": descriptor.required_capabilities.iter().map(|cap| cap.as_str()).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>()).to_string())
+    }
+
+    fn start_request(&self, py: Python<'_>, request_json: &str) -> PyResult<String> {
+        let value: Value = serde_json::from_str(request_json).map_err(invalid_request)?;
+        let messages: Vec<Message> =
+            serde_json::from_value(value.get("messages").cloned().unwrap_or(Value::Null))
+                .map_err(invalid_request)?;
+        let options = &value["options"];
+        let limits = match options.get("limits") {
+            None | Some(Value::Null) => self.limits,
+            Some(limits) => serde_json::from_value(limits.clone()).map_err(invalid_request)?,
+        };
+        let allowed_tools: Option<Vec<String>> =
+            serde_json::from_value(options.get("allowed_tools").cloned().unwrap_or(Value::Null))
+                .map_err(invalid_request)?;
+        let authority = parse_authority(&options["authority"])?;
+        let request = RunRequest {
+            session_id: optional_feature_str(&value, "session_id")?
+                .as_deref()
+                .map(SessionId::parse_or_stable_key)
+                .transpose()
+                .map_err(invalid_request)?,
+            messages,
+            model: ModelRef {
+                provider: self.binding.provider_id.clone(),
+                model: self.binding.model.clone(),
+            },
+            session_key: optional_feature_str(options, "session_key")?
+                .as_deref()
+                .map(ProviderSessionKey::from_cache_session),
+            allowed_tools,
+            limits,
+            features: parse_features(value.get("features").map(Value::to_string).as_deref())?,
+            authority,
+        };
+        let handle = py
+            .detach(|| RUNTIME.block_on(self.inner.start(request)))
+            .map_err(map_error)?;
+        Ok(self.insert_run(handle))
+    }
+
+    fn release_run(&self, run_id: &str) {
+        self.runs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(run_id);
     }
 
     fn register_tool(&self, descriptor_json: &str, callback: Py<PyAny>) -> PyResult<()> {
@@ -138,16 +228,11 @@ impl NativeAgent {
 
     fn next_event(&self, py: Python<'_>, run_id: &str) -> PyResult<Option<String>> {
         let handle = self.run_handle(run_id)?;
-        let event = py.detach(|| {
-            RUNTIME.block_on(async {
-                handle
-                    .lock()
-                    .await
-                    .events()
-                    .next()
-                    .await
-            })
-        });
+        let event =
+            py.detach(|| RUNTIME.block_on(async { handle.lock().await.events().next().await }));
+        if event.is_none() {
+            self.release_run(run_id);
+        }
         Ok(event.map(|envelope| envelope_to_json(&envelope).to_string()))
     }
 
@@ -277,12 +362,16 @@ impl NativeAgent {
                 )))
             })
             .map_err(map_error)?;
+        Ok(self.insert_run(handle))
+    }
+
+    fn insert_run(&self, handle: RunHandle) -> String {
         let run_id = handle.id().hyphenated();
         self.runs
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(run_id.clone(), Arc::new(AsyncMutex::new(handle)));
-        Ok(run_id)
+        run_id
     }
 
     fn run_handle(&self, run_id: &str) -> PyResult<Arc<AsyncMutex<RunHandle>>> {
@@ -326,13 +415,28 @@ impl ToolExecutor for PythonToolExecutor {
 }
 
 struct PythonToolPolicy {
-    callback: Py<PyAny>,
+    callback: Option<Py<PyAny>>,
 }
 
 impl ToolPolicy for PythonToolPolicy {
     fn evaluate(&self, input: &ToolPolicyInput<'_>) -> ToolDecision {
+        let missing: Vec<_> = input
+            .descriptor
+            .required_capabilities
+            .iter()
+            .filter(|capability| !input.authority.grants(capability))
+            .map(|capability| capability.as_str())
+            .collect();
+        if !missing.is_empty() {
+            return ToolDecision::Deny {
+                reason: format!("Missing Host capability grants: {}.", missing.join(", ")),
+            };
+        }
+        let Some(callback) = &self.callback else {
+            return ToolDecision::Allow;
+        };
         let result = Python::attach(|py| {
-            self.callback
+            callback
                 .bind(py)
                 .call1((
                     input.descriptor.name.as_str(),
@@ -476,7 +580,13 @@ fn snapshot_to_json(snapshot: &RunSnapshot) -> Value {
     json!({
         "run_id": snapshot.context.run_id.hyphenated(),
         "session_id": snapshot.context.session_id.map(|id| id.hyphenated()),
-        "state": format!("{:?}", snapshot.state).to_ascii_lowercase(),
+        "state": match snapshot.state {
+            aifluxon_api::RunState::Running => "running",
+            aifluxon_api::RunState::AwaitingOperation => "awaiting_operation",
+            aifluxon_api::RunState::Completed => "completed",
+            aifluxon_api::RunState::Failed => "failed",
+            aifluxon_api::RunState::Cancelled => "cancelled",
+        },
         "last_event_sequence": snapshot.last_event_sequence,
         "pending_operations": snapshot
             .pending_operations
@@ -493,6 +603,7 @@ fn session_record_json(record: &aifluxon_api::SessionRecord) -> Value {
         "created_at": record.created_at,
         "updated_at": record.updated_at,
         "message_count": record.messages.len(),
+        "messages": record.messages,
     })
 }
 
@@ -505,14 +616,50 @@ fn parse_features(raw: Option<&str>) -> PyResult<ProviderFeatureRequest> {
     };
     let value: Value = serde_json::from_str(raw).map_err(invalid_request)?;
     Ok(ProviderFeatureRequest {
-        web_search: false,
-        image_generation: false,
+        web_search: optional_feature_bool(&value, "web_search")?,
+        image_generation: optional_feature_bool(&value, "image_generation")?,
         reasoning_effort: optional_feature_str(&value, "reasoning_effort")?,
         thinking_mode: optional_feature_str(&value, "thinking_mode")?,
         thinking_budget: optional_feature_str(&value, "thinking_budget")?,
-        prompt_cache_key: None,
-        explicit_cache: false,
+        prompt_cache_key: optional_feature_str(&value, "prompt_cache_key")?,
+        explicit_cache: optional_feature_bool(&value, "explicit_cache")?,
     })
+}
+
+fn optional_feature_bool(value: &Value, field: &str) -> PyResult<bool> {
+    match value.get(field) {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(value)) => Ok(*value),
+        _ => Err(invalid_request(format!(
+            "Feature `{field}` must be a boolean."
+        ))),
+    }
+}
+
+fn parse_authority(value: &Value) -> PyResult<Option<ExecutionAuthority>> {
+    if value.is_null() {
+        return Ok(None);
+    }
+    let permission_mode = match value.get("permission_mode").and_then(Value::as_str) {
+        Some("default") => PermissionMode::Default,
+        Some("managed") => PermissionMode::Managed,
+        Some("trusted") => PermissionMode::Trusted,
+        _ => return Err(invalid_request("Unknown permission_mode.")),
+    };
+    let filesystem_scope = match value.get("filesystem_scope").and_then(Value::as_str) {
+        Some("workspace") => AgentFilesystemScope::Workspace,
+        Some("isolated") => AgentFilesystemScope::Isolated,
+        Some("scoped_selection") => AgentFilesystemScope::ScopedSelection,
+        Some("trusted") => AgentFilesystemScope::Trusted,
+        _ => return Err(invalid_request("Unknown filesystem_scope.")),
+    };
+    let capabilities: Vec<String> =
+        serde_json::from_value(value["capabilities"].clone()).map_err(invalid_request)?;
+    Ok(Some(ExecutionAuthority {
+        permission_mode,
+        filesystem_scope,
+        capabilities: capabilities.into_iter().map(CapabilityId::new).collect(),
+    }))
 }
 
 fn parse_content_parts(raw: &str) -> PyResult<Vec<ContentPart>> {

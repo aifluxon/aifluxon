@@ -621,6 +621,36 @@ async fn unknown_tool_fails_closed() {
 }
 
 #[tokio::test]
+async fn registered_but_disallowed_tool_never_executes() {
+    let registry = ProviderRegistry::new();
+    registry
+        .register(
+            ProviderId::new("scripted"),
+            scripted(vec![tool_turn("read_file", "hidden")]),
+        )
+        .unwrap();
+    let tools = ToolRegistry::new();
+    let executions = Arc::new(AtomicUsize::new(0));
+    tools
+        .register(
+            read_descriptor(),
+            Arc::new(EchoTool {
+                executions: executions.clone(),
+            }),
+        )
+        .unwrap();
+    let backend = backend(registry, tools, Arc::new(AllowAllToolPolicy));
+    let mut request = user_request("scripted");
+    request.allowed_tools = Some(Vec::new());
+    let mut handle = backend.start(request).await.unwrap();
+    assert!(matches!(
+        wait_for_terminal(&mut handle).await,
+        RunEvent::Failed { .. }
+    ));
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn unknown_allowed_tool_is_rejected_before_runtime_handoff() {
     let registry = ProviderRegistry::new();
     registry

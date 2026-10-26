@@ -1,5 +1,7 @@
 # AIFLUXON
 
+Python supports full run options, canonical message/tool-call replay, session history, rich tool schemas/results, capability grants and Rust-backed DeepSeek search/fetch tools. See [Run options and Rust parity](../../docs/python/run-options.md) and the [API reference](../../docs/python/api-reference.md).
+
 Experimental Python SDK for the AIFLUXON in-process agent backend.
 
 ```text

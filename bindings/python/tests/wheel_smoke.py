@@ -12,6 +12,9 @@ from aifluxon import (
     EncryptedFileSecretStore,
     ImageInput,
     JsonFileSessionStore,
+    Message,
+    RunLimits,
+    RunOptions,
     ToolEffect,
     tool,
 )
@@ -41,6 +44,9 @@ async def smoke() -> None:
 
         reopened = Agent(ControlledProvider(["reopened"]), store=store)
         assert (await reopened.open_session(session.id)).id == session.id
+        record = await reopened.get_session(session.id)
+        assert record.messages[-1].content == ["session-ok"]
+        assert record.message_count == 2
 
         secret_store = EncryptedFileSecretStore(str(root / "credentials.vault"))
         await secret_store.unlock("wheel-smoke-password")
@@ -68,9 +74,20 @@ async def smoke() -> None:
     assert (await tool_agent.run("use the tool")).text == "tool-ok"
     assert calls == 1
 
+    advanced = Agent(
+        ControlledProvider(["messages-ok"]),
+        options=RunOptions(limits=RunLimits.unlimited()),
+    )
+    assert (
+        await advanced.run_messages([Message("user", "hello")])
+    ).text == "messages-ok"
+    assert advanced.capabilities.supports_images
+
     agents = [Agent(ControlledProvider([f"parallel-{index}"])) for index in range(8)]
     results = await asyncio.gather(*(agent.run("x") for agent in agents))
-    assert [result.text for result in results] == [f"parallel-{index}" for index in range(8)]
+    assert [result.text for result in results] == [
+        f"parallel-{index}" for index in range(8)
+    ]
 
 
 if __name__ == "__main__":

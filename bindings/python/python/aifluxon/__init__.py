@@ -1,4 +1,14 @@
 from .agent import Agent, Run, RunResult, Session
+from .auth import (
+    CodexAccount,
+    CodexAuth,
+    CodexAuthStatus,
+    CodexLoginAttempt,
+    CodexProvider,
+    EncryptedFileSecretStore,
+    MemorySecretStore,
+    SystemKeyringStore,
+)
 from .errors import (
     AccountNotFoundError,
     AccountSelectionRequiredError,
@@ -20,16 +30,6 @@ from .errors import (
     TokenRefreshError,
     ToolError,
 )
-from .auth import (
-    CodexAccount,
-    CodexAuth,
-    CodexAuthStatus,
-    CodexLoginAttempt,
-    CodexProvider,
-    EncryptedFileSecretStore,
-    MemorySecretStore,
-    SystemKeyringStore,
-)
 from .events import (
     ArtifactProduced,
     Cancelled,
@@ -46,23 +46,33 @@ from .events import (
     UsageUpdated,
 )
 from .input import ImageInput, PromptInput, PromptPart
+from .messages import Message, ToolCall
+from .options import ExecutionAuthority, ProviderFeatures, RunLimits, RunOptions
 from .providers import (
     Codex,
     ControlledProvider,
     Custom,
     DeepSeek,
+    DeepSeekWebTools,
     Gemini,
     Kimi,
     OpenAI,
+    ProviderCapabilities,
     ProviderConfig,
     Qwen,
 )
+from .session import (
+    InMemorySessionStore,
+    JsonFileSessionStore,
+    SessionRecord,
+    SessionStore,
+)
 from .thinking import ThinkingSettings
-from .session import InMemorySessionStore, JsonFileSessionStore, SessionStore
 from .tools import (
     AllowAllPolicy,
     RequireApprovalPolicy,
     ToolEffect,
+    ToolResult,
     tool,
 )
 
@@ -72,9 +82,9 @@ __all__ = [
     "AccountNotFoundError",
     "AccountSelectionRequiredError",
     "Agent",
+    "AifluxonError",
     "AllowAllPolicy",
     "ArtifactProduced",
-    "AifluxonError",
     "AuthenticationRequiredError",
     "BudgetExceededError",
     "CallbackTimeoutError",
@@ -93,33 +103,41 @@ __all__ = [
     "CredentialStoreUnavailableError",
     "Custom",
     "DeepSeek",
+    "DeepSeekWebTools",
     "EncryptedFileSecretStore",
     "Event",
+    "ExecutionAuthority",
     "Failed",
     "FailedError",
     "Gemini",
-    "InMemorySessionStore",
     "ImageInput",
+    "InMemorySessionStore",
     "InternalError",
     "InvalidConfigurationError",
     "InvalidRequestError",
     "JsonFileSessionStore",
     "Kimi",
     "MemorySecretStore",
+    "Message",
     "OpenAI",
     "OperationRequested",
     "PolicyError",
-    "ProviderConfig",
-    "ProviderError",
     "PromptInput",
     "PromptPart",
+    "ProviderCapabilities",
+    "ProviderConfig",
+    "ProviderError",
+    "ProviderFeatures",
     "Qwen",
     "ReasoningDelta",
     "RequireApprovalPolicy",
     "Run",
+    "RunLimits",
+    "RunOptions",
     "RunResult",
     "RunStarted",
     "Session",
+    "SessionRecord",
     "SessionStore",
     "StateChanged",
     "StateConflictError",
@@ -127,9 +145,11 @@ __all__ = [
     "TextDelta",
     "ThinkingSettings",
     "TokenRefreshError",
+    "ToolCall",
     "ToolEffect",
     "ToolError",
     "ToolFinished",
+    "ToolResult",
     "ToolStarted",
     "UsageUpdated",
     "tool",

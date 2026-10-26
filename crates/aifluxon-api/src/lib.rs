@@ -47,13 +47,13 @@ pub use web_tools::register_deepseek_web_tools;
 pub use workspace::{EmptyWorkspace, Workspace};
 
 pub use aifluxon_core::{
-    ArtifactRef, CapabilityId, ContentPart, ContinuationReason, ExecutionAuthority, ImageContent,
-    Message, MessageRole, ModelEventSink, ModelProvider, ModelRef, ModelTurn, ModelTurnRequest,
-    NoopModelEventSink, OperationDecision, OperationId, OperationMode, PendingOperation,
-    PendingOperationDraft, PermissionMode, ProviderCapabilities, ProviderError,
-    ProviderFeatureRequest, ProviderId, ProviderSessionKey, ProviderTerminal, RunContext, RunId,
-    RunLimits, RunRequest, RunState, SessionId, ToolCall, ToolDescriptor, ToolEffect,
-    ToolInvocationId,
+    AgentFilesystemScope, ArtifactRef, CapabilityId, ContentPart, ContinuationReason,
+    ExecutionAuthority, ImageContent, Message, MessageRole, ModelEventSink, ModelProvider,
+    ModelRef, ModelTurn, ModelTurnRequest, NoopModelEventSink, OperationDecision, OperationId,
+    OperationMode, PendingOperation, PendingOperationDraft, PermissionMode, ProviderCapabilities,
+    ProviderError, ProviderFeatureRequest, ProviderId, ProviderSessionKey, ProviderTerminal,
+    RunContext, RunId, RunLimits, RunRequest, RunState, SessionId, ToolCall, ToolDescriptor,
+    ToolEffect, ToolInvocationId,
 };
 pub use aifluxon_runtime::{
     AllowAllToolPolicy, InMemoryProviderStateStore, InMemoryRunCheckpointStore,

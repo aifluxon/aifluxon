@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Complete Python run options with finite/unlimited budgets, tool allowlists, provider features, session keys and explicit capability grants.
+- Add canonical message/tool-call replay, complete session history, provider capabilities, public tool registration and Rust-backed DeepSeek search/fetch tools.
+- Expand Python tool schemas and structured multimodal results; execute async tools on the caller's event loop.
+- Fix result-only and abandoned event-consumer hangs, reject premature stream closure, release native stream handles and complete native type declarations.
+- Enforce Rust facade tool allowlists in execution as well as provider advertisement.
+- Honor the custom provider's cumulative-stream override through Python and the Rust JSON factory.
+
 ## 0.2.1
 
 - Recognize current `deepseek-flash` vision and Responses support while retaining legacy vision model compatibility.

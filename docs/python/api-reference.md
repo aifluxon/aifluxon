@@ -48,6 +48,8 @@ class Agent:
         reasoning_effort: str | None = None,
         thinking: bool | str | None = None,
         thinking_budget: int | str | None = None,
+        options: RunOptions | None = None,
+        web_tools: DeepSeekWebTools | None = None,
     ) -> None: ...
 ```
 
@@ -155,7 +157,7 @@ class Run:
     async def commit_operation(self, operation_id: str) -> None: ...
 ```
 
-* `events()` is a bounded async iterator over Runtime events. Sequence is monotonic. Terminal events occur once.
+* `events()` is a lossless async iterator over Runtime events. Python buffers unread events in memory so waiting for `result()` never depends on consuming events. Only one iterator may consume a Run at a time. After exhaustion, subsequent calls finish immediately. Sequence is monotonic and terminal events occur once.
 * Dropping the iterator does **not** cancel the run.
 * `result()` waits for the run to finish. It does not sum token deltas.
 * `resolve_operation` is for blocking approval. `commit_operation` is for deferred prepared-effect commit.
@@ -241,9 +243,11 @@ Default base URL: `https://generativelanguage.googleapis.com/v1beta/openai`.
 
 Default API mode: `responses`. Default base URL: `https://api.openai.com/v1`.
 
-### `Custom(model, *, base_url, api_key="", provider_id="custom", api_mode=None)`
+### `Custom(model, *, base_url, api_key="", provider_id="custom", api_mode=None, allow_cumulative_delta=None)`
 
 `base_url` is required.
+
+`allow_cumulative_delta` overrides Rust's custom-provider default (`True`). Set `False` for endpoints that send ordinary incremental deltas which may legitimately repeat earlier text.
 
 ### `ControlledProvider(responses=None, *, turns=None, provider_id="controlled", model="controlled-model", delay_ms=None)`
 
@@ -364,3 +368,71 @@ Every event has `sequence: int`, `run_id: str`, and `type: str`. See [events.md]
 * `CredentialCorruptedError`
 
 See [errors.md](errors.md).
+
+## `RunOptions`, `RunLimits`, `ProviderFeatures`, and `ExecutionAuthority`
+
+```python
+RunOptions(
+    limits=RunLimits(max_model_rounds=32, max_tool_invocations=64),
+    features=ProviderFeatures(
+        web_search=False, image_generation=False,
+        prompt_cache_key=None, explicit_cache=False,
+    ),
+    allowed_tools=None, authority=None, session_key=None,
+)
+ExecutionAuthority(
+    capabilities=frozenset(), permission_mode="default", filesystem_scope="isolated",
+)
+```
+
+`Agent(options=...)` sets defaults, exposed through `Agent.options`. `Agent.start/run`, `Session.start/run` and message methods accept `options=...`. Per-run options replace all Agent options; use `dataclasses.replace` for a partial override. Existing thinking and system-prompt arguments remain independent. Legacy constructor budgets remain supported but non-default legacy budgets cannot be combined with `options`.
+
+`RunLimits.unlimited()` matches Rust's unlimited mode, disabling loop, continuation and wall-time budgets. `is_unlimited` reports it. Finite limits must be integers in `0..2**32-1`; zero prevents the corresponding work. Cancellation, policies, provider failures and normal completion still apply.
+
+`allowed_tools=None` permits the registered set; an empty tuple disables registered tools. Non-empty collections select exact names for provider advertisement and execution. Unknown names fail before launch. Hosted provider tools are controlled separately through feature flags.
+
+Required capabilities on Python tools must be granted through `ExecutionAuthority` before the Python tool policy runs. A missing grant produces a denied tool result without executing the function. Permission modes are `default`, `managed`, `trusted`; filesystem scopes are `workspace`, `isolated`, `scoped_selection`, `trusted`. These fields describe host authority; they do not create an operating-system sandbox or grant file access by themselves.
+
+`session_key` selects the provider session/cache identity; it does not identify or create a persisted Session. Feature support remains provider-owned. See [Run options and Rust parity](run-options.md).
+
+## `Message` and `ToolCall`
+
+```python
+Message(role, content="", tool_calls=(), tool_call_id=None, provider_state=None)
+ToolCall(name, arguments={}, id=<new UUID>, provider_call_id=None)
+```
+
+`role` is `system`, `user`, `assistant`, or `tool`. Content accepts text, ordered text/image parts, or an empty sequence for tool-call-only assistant messages. `to_dict()` and `Message.from_dict()` use canonical Rust content: `{"text": "hello"}` or `{"image": {"artifact": "...", "mime_type": "image/png"}}`.
+
+`await Agent.start_messages(messages, **run_keywords)` / `await Agent.run_messages(messages, **run_keywords)` accept a non-empty sequence of `Message` objects or canonical dictionaries from `RunResult.output`. Keywords match `Agent.start/run`, including `options`. The corresponding Session methods bind `session_id` automatically.
+
+An explicit leading system message takes precedence over the Agent default. An explicit non-empty `system_prompt` replaces leading system messages. Stored session history is still prepended: pass only new messages when using a Session, or omit `session_id` when replaying a full transcript.
+
+Tool invocation `id` and `tool_call_id` are canonical UUID strings. Keep upstream IDs in `provider_call_id`. The bridge infers missing tool-message `provider_state.call_id` from a preceding assistant call. Explicit provider state, including reasoning signatures, is preserved.
+
+## `SessionRecord`
+
+`await Agent.get_session(session_id)` returns a frozen `SessionRecord` with `id`, `revision`, `created_at`, `updated_at`, `messages: tuple[Message, ...]`, and computed `message_count`. Timestamps are Unix milliseconds. `await Session.refresh()` returns the latest record and updates `Session.revision`; `await Session.history()` refreshes and returns messages; `await Session.delete()` removes the session.
+
+## `ProviderCapabilities`
+
+`Agent.capabilities` exposes all eight Rust declarations: `supports_remote_conversation`, `supports_prompt_cache_key`, `supports_reasoning_stream`, `supports_parallel_tool_calls`, `supports_hosted_tools`, `supports_images`, `supports_web_search`, and `supports_session_restore`. These are provider-level declarations, not an upstream model catalog or a model-name gate.
+
+## `DeepSeekWebTools`
+
+```python
+DeepSeekWebTools(api_key, base_url="https://api.deepseek.com")
+Agent(provider, web_tools=DeepSeekWebTools(...))
+```
+
+Registers Rust's `web_search` and `web_fetch` with any Agent provider. Both have `ToolEffect.NETWORK` and follow normal allowlist, approval, validation and replay behavior. This is independent of hosted `ProviderFeatures.web_search`. API keys are excluded from provider and web-tool configuration reprs.
+
+## Rich tool schemas and `ToolResult`
+
+`Agent.register_tool(fn)` registers a decorated tool for subsequent runs; `Agent.list_tools()` returns canonical descriptors. Duplicate names raise `InvalidConfigurationError`.
+
+Schema inference supports scalar types, `Any`, `None`, nested lists and string-keyed dictionaries, nullable/general unions, `Literal`, JSON-valued `Enum`, `TypedDict` with `Required`/`NotRequired`, and `Annotated` descriptions/schema metadata. Enum arguments arrive as their JSON scalar values. Positional-only and variadic parameters are rejected because tools are called by keyword.
+
+`@tool(input_schema={...})` supplies an explicit JSON Schema. `Annotated` metadata may be a description string or schema dictionary. Async tools run on the event loop that started the run, allowing reuse of caller-owned async clients. One Agent cannot execute concurrently on different event loops.
+
+`ToolResult(value, content=None)` separates the JSON event/replay value from optional non-empty text/image content sent to the model. Existing plain Python and `ImageInput` returns remain supported. Required capability grants are checked before both `AllowAllPolicy` and custom Python policies.

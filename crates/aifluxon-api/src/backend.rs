@@ -143,6 +143,24 @@ impl Aifluxon {
             &self.configuration.tool_registry,
             request.allowed_tools.as_ref(),
         );
+        // Use the same allowlist for advertisement and execution. A provider may
+        // return a registered tool that was not offered on this run.
+        let registry = if request.allowed_tools.is_some() {
+            let selected = ToolRegistry::new();
+            for descriptor in &tools {
+                if let Some(registered) = self.configuration.tool_registry.resolve(&descriptor.name)
+                {
+                    selected
+                        .register(descriptor.clone(), registered.executor())
+                        .map_err(|error| {
+                            AifluxonError::new(AifluxonErrorKind::Tool, error.to_string())
+                        })?;
+                }
+            }
+            Arc::new(selected)
+        } else {
+            self.configuration.tool_registry.clone()
+        };
         let mut capabilities = HashSet::new();
         for descriptor in &tools {
             for capability in &descriptor.required_capabilities {
@@ -188,7 +206,6 @@ impl Aifluxon {
             features: request.features.clone(),
         };
         let table = self.configuration.run_table.clone();
-        let registry = self.configuration.tool_registry.clone();
         let policy = self.configuration.tool_policy.clone();
         let session_store = self.configuration.session_store.clone();
         let provider_state_store = self.configuration.provider_state_store.clone();

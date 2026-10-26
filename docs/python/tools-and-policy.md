@@ -1,5 +1,9 @@
 # Tools and policy
 
+Schema inference also supports nested JSON types, nullable unions, `Literal`, JSON-valued `Enum`, `TypedDict`, and `Annotated` metadata. Supply `@tool(input_schema=...)` for an explicit schema. Async functions execute on the caller's event loop. `ToolResult(value={...}, content="model-facing text")` separates event data from model input; content may include images.
+
+Tools declaring `required_capabilities` need matching `ExecutionAuthority` grants in `RunOptions`. Missing grants produce denied tool results before the custom policy runs. `AllowAllPolicy` permits tools after this capability check. See [run-options.md](run-options.md).
+
 Python callables go through the same tool path as other embedders. They do not bypass validation, policy, operations, the tool ledger, budget, or cancellation.
 
 ```text
