@@ -22,7 +22,7 @@ from aifluxon import (
 
 async def smoke() -> None:
     assert native is not None
-    assert aifluxon.__version__ == "0.2.1"
+    assert aifluxon.__version__ == "0.3.0"
 
     result = await Agent(ControlledProvider(["wheel-ok"])).run("hello")
     assert result.state == "completed"

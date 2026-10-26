@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.0 - 2026-10-26
+
 - Complete Python run options with finite/unlimited budgets, tool allowlists, provider features, session keys and explicit capability grants.
 - Add canonical message/tool-call replay, complete session history, provider capabilities, public tool registration and Rust-backed DeepSeek search/fetch tools.
 - Expand Python tool schemas and structured multimodal results; execute async tools on the caller's event loop.
