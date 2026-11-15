@@ -4,13 +4,18 @@ use std::time::Duration;
 pub const MAX_HTTP_ATTEMPTS: u8 = 3;
 pub const MAX_PROVIDER_ERROR_CHARS: usize = 1_200;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct HttpClientTuning {
+    #[serde(rename = "connect_timeout_ms", deserialize_with = "duration_millis")]
     pub connect_timeout: Duration,
+    #[serde(rename = "read_timeout_ms", deserialize_with = "duration_millis")]
     pub read_timeout: Duration,
+    #[serde(rename = "pool_idle_timeout_ms", deserialize_with = "duration_millis")]
     pub pool_idle_timeout: Duration,
     pub pool_max_idle_per_host: usize,
     pub http1_only: bool,
+    pub proxy_url: Option<String>,
 }
 
 impl Default for HttpClientTuning {
@@ -21,7 +26,31 @@ impl Default for HttpClientTuning {
             pool_idle_timeout: Duration::from_secs(90),
             pool_max_idle_per_host: 8,
             http1_only: true,
+            proxy_url: None,
         }
+    }
+}
+
+fn duration_millis<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Duration, D::Error> {
+    let millis = <u64 as serde::Deserialize>::deserialize(deserializer)?;
+    if millis == 0 {
+        return Err(serde::de::Error::custom("timeout must be positive"));
+    }
+    Ok(Duration::from_millis(millis))
+}
+
+impl std::fmt::Debug for HttpClientTuning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpClientTuning")
+            .field("connect_timeout", &self.connect_timeout)
+            .field("read_timeout", &self.read_timeout)
+            .field("pool_idle_timeout", &self.pool_idle_timeout)
+            .field("pool_max_idle_per_host", &self.pool_max_idle_per_host)
+            .field("http1_only", &self.http1_only)
+            .field("proxy_url", &self.proxy_url.as_ref().map(|_| "[redacted]"))
+            .finish()
     }
 }
 
@@ -35,7 +64,15 @@ pub fn build_http_client(tuning: HttpClientTuning) -> Result<reqwest::Client, St
     if tuning.http1_only {
         builder = builder.http1_only();
     }
-    builder.build().map_err(|error| error.to_string())
+    if let Some(proxy) = tuning.proxy_url {
+        builder = builder.proxy(
+            reqwest::Proxy::all(proxy)
+                .map_err(|_| "Invalid HTTP proxy configuration.".to_string())?,
+        );
+    }
+    builder
+        .build()
+        .map_err(|_| "HTTP client configuration could not be built.".to_string())
 }
 
 pub fn is_transient_reqwest_error(error: &reqwest::Error) -> bool {
@@ -170,6 +207,17 @@ pub async fn send_http_request(
     secrets: &[&str],
     policy: HttpRetryPolicy,
 ) -> Result<reqwest::Response, String> {
+    send_http_request_structured(context, request, secrets, policy)
+        .await
+        .map_err(|error| error.message)
+}
+
+pub async fn send_http_request_structured(
+    context: &str,
+    request: reqwest::RequestBuilder,
+    secrets: &[&str],
+    policy: HttpRetryPolicy,
+) -> Result<reqwest::Response, aifluxon_core::ProviderError> {
     let mut request = request;
     for attempt in 1..=MAX_HTTP_ATTEMPTS {
         let next = request.try_clone();
@@ -195,14 +243,21 @@ pub async fn send_http_request(
             || delay > Duration::from_secs(60)
         {
             return result.map_err(|error| {
-                sanitize_provider_error(
-                    format!(
-                        "{context}: Provider request failed after {attempt} attempt(s): {error}"
+                let code = if is_transient_reqwest_error(&error) {
+                    aifluxon_core::ProviderErrorCode::TransientTransport
+                } else {
+                    aifluxon_core::ProviderErrorCode::Transport
+                };
+                aifluxon_core::ProviderError::new(
+                    code,
+                    sanitize_provider_error(
+                        format!("{context}: Provider request failed after {attempt} attempt(s)."),
+                        secrets,
                     ),
-                    secrets,
                 )
             });
         }
+
         tracing::warn!(
             category = "agent",
             component = "agent.http",

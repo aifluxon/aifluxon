@@ -197,7 +197,8 @@ impl LiveStreamDecoder {
             }
             if !event.data.trim().is_empty() {
                 let value: Value = serde_json::from_str(&event.data).map_err(|_| {
-                    ProviderError::message(
+                    ProviderError::new(
+                        aifluxon_core::ProviderErrorCode::MalformedResponse,
                         "PROVIDER_MALFORMED_RESPONSE: Invalid JSON in a stream event.",
                     )
                 })?;
@@ -205,7 +206,8 @@ impl LiveStreamDecoder {
                 if value.get("error").is_some_and(|error| !error.is_null())
                     || event.event.as_deref() == Some("error")
                 {
-                    return Err(ProviderError::message(
+                    return Err(ProviderError::new(
+                        aifluxon_core::ProviderErrorCode::FinishError,
                         "PROVIDER_FINISH_ERROR: Provider returned a stream error.",
                     ));
                 }
@@ -248,9 +250,12 @@ impl LiveStreamDecoder {
         if self.sse == Some(true) {
             // An unterminated SSE tail is truncation, never an executable tool call.
             if !self.complete {
-                self.diagnostics
-                    .fail(&ProviderError::message("PROVIDER_STREAM_CLOSED:"));
-                return Err(ProviderError::message(
+                self.diagnostics.fail(&ProviderError::new(
+                    aifluxon_core::ProviderErrorCode::StreamClosed,
+                    "PROVIDER_STREAM_CLOSED:",
+                ));
+                return Err(ProviderError::new(
+                    aifluxon_core::ProviderErrorCode::StreamClosed,
                     "PROVIDER_STREAM_CLOSED: Stream ended before its terminal event.",
                 ));
             }
@@ -258,14 +263,18 @@ impl LiveStreamDecoder {
             return self.finish_turn();
         }
         if self.raw.is_empty() {
-            self.diagnostics
-                .fail(&ProviderError::message("PROVIDER_EMPTY_RESPONSE:"));
-            return Err(ProviderError::message(
+            self.diagnostics.fail(&ProviderError::new(
+                aifluxon_core::ProviderErrorCode::EmptyResponse,
+                "PROVIDER_EMPTY_RESPONSE:",
+            ));
+            return Err(ProviderError::new(
+                aifluxon_core::ProviderErrorCode::EmptyResponse,
                 "PROVIDER_EMPTY_RESPONSE: Provider returned an empty body.",
             ));
         }
         let value = serde_json::from_slice::<Value>(&self.raw).map_err(|_| {
-            let error = ProviderError::message(
+            let error = ProviderError::new(
+                aifluxon_core::ProviderErrorCode::MalformedResponse,
                 "PROVIDER_MALFORMED_RESPONSE: Provider returned invalid JSON.",
             );
             self.diagnostics.fail(&error);
@@ -273,9 +282,12 @@ impl LiveStreamDecoder {
         })?;
         self.diagnostics.observe(&value);
         if value.get("error").is_some_and(|error| !error.is_null()) {
-            self.diagnostics
-                .fail(&ProviderError::message("PROVIDER_FINISH_ERROR:"));
-            return Err(ProviderError::message(
+            self.diagnostics.fail(&ProviderError::new(
+                aifluxon_core::ProviderErrorCode::FinishError,
+                "PROVIDER_FINISH_ERROR:",
+            ));
+            return Err(ProviderError::new(
+                aifluxon_core::ProviderErrorCode::FinishError,
                 "PROVIDER_FINISH_ERROR: Provider returned a response error.",
             ));
         }

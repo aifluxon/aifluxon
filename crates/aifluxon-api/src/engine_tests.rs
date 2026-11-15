@@ -371,7 +371,9 @@ async fn argument_validation_returns_a_retryable_tool_result_and_model_can_retry
             {
                 validation_result = Some(result)
             }
-            RunEvent::Failed { message } => panic!("validation must not fail the run: {message}"),
+            RunEvent::Failed { message, .. } => {
+                panic!("validation must not fail the run: {message}")
+            }
             RunEvent::Completed { .. } => completed = true,
             _ => {}
         }
@@ -1065,4 +1067,75 @@ async fn normal_answer_without_tools_does_not_continue() {
     let mut handle = backend.start(user_request("scripted")).await.unwrap();
     wait_for_terminal(&mut handle).await;
     assert_eq!(requests.lock().unwrap().len(), 1);
+}
+
+struct FailingProvider {
+    id: ProviderId,
+    error: ProviderError,
+}
+
+#[async_trait::async_trait]
+impl ModelProvider for FailingProvider {
+    fn id(&self) -> &ProviderId {
+        &self.id
+    }
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities::openai_compatible()
+    }
+    async fn next_turn(
+        &self,
+        _: ModelTurnRequest,
+        _: Arc<dyn ModelEventSink>,
+    ) -> Result<ModelTurn, ProviderError> {
+        Err(self.error.clone())
+    }
+}
+
+#[tokio::test]
+async fn structured_failures_reach_api_results_and_cancellation_stays_clean() {
+    use aifluxon_core::ProviderErrorCode;
+    for (error, kind) in [
+        (
+            ProviderError::message("limit")
+                .with_http_status(429)
+                .with_retry_after(Some(std::time::Duration::from_secs(2))),
+            AifluxonErrorKind::RateLimited,
+        ),
+        (
+            ProviderError::new(ProviderErrorCode::TransientTransport, "connection lost"),
+            AifluxonErrorKind::Transient,
+        ),
+        (
+            ProviderError::new(ProviderErrorCode::Cancelled, "localized cancellation"),
+            AifluxonErrorKind::Cancelled,
+        ),
+        (
+            ProviderError::message("PROVIDER_TRANSIENT_TRANSPORT: quoted text"),
+            AifluxonErrorKind::Provider,
+        ),
+    ] {
+        let registry = ProviderRegistry::new();
+        registry
+            .register(
+                ProviderId::new("failure"),
+                FailingProvider {
+                    id: ProviderId::new("failure"),
+                    error: error.clone(),
+                },
+            )
+            .unwrap();
+        let api = backend(registry, ToolRegistry::new(), Arc::new(AllowAllToolPolicy));
+        let mut run = api.start(user_request("failure")).await.unwrap();
+        let result = run.result().await.unwrap_err();
+        assert_eq!(result.kind(), kind);
+        let snapshot = api.snapshot(run.id()).await.unwrap();
+        if kind == AifluxonErrorKind::Cancelled {
+            assert_eq!(snapshot.state, RunState::Cancelled);
+        } else {
+            assert_eq!(result.provider_error(), Some(&error));
+            assert_eq!(snapshot.state, RunState::Failed);
+        }
+        api.release_run(run.id()).unwrap();
+        assert!(api.snapshot(run.id()).await.is_ok());
+    }
 }

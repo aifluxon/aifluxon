@@ -65,10 +65,21 @@ pub fn event_to_json(event: &RunEvent) -> Value {
             "type": "completed",
             "output": output.iter().map(message_to_json).collect::<Vec<_>>(),
         }),
-        RunEvent::Failed { message } => json!({
-            "type": "failed",
-            "message": message,
-        }),
+        RunEvent::Failed { message, error } => {
+            let mut value = json!({ "type": "failed", "message": message });
+            if let Some(error) = error {
+                value["error_code"] = json!(error.code.as_str());
+                value["error_kind"] = json!(format!(
+                    "{:?}",
+                    crate::AifluxonError::from(error.clone()).kind()
+                ));
+                value["http_status"] = json!(error.http_status);
+                value["retry_after_ms"] = json!(error
+                    .retry_after
+                    .map(|delay| delay.as_millis().min(u64::MAX as u128) as u64));
+            }
+            value
+        }
         RunEvent::Cancelled => json!({
             "type": "cancelled",
         }),

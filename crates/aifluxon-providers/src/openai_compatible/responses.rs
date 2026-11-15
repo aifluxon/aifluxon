@@ -578,14 +578,20 @@ impl ResponsesTurnAssembler {
                 .or_else(|| value.get("message"))
                 .and_then(Value::as_str)
                 .unwrap_or("Responses stream failed.");
-            return Err(ProviderError::message(message));
+            let code = if value.get("type").and_then(Value::as_str) == Some("response.cancelled") {
+                aifluxon_core::ProviderErrorCode::Cancelled
+            } else {
+                aifluxon_core::ProviderErrorCode::FinishError
+            };
+            return Err(ProviderError::new(code, message));
         }
 
         if self.state.terminal.is_some() {
             let terminal = value.get("response").unwrap_or(value);
             if let Some(end_turn) = terminal.get("end_turn").filter(|value| !value.is_null()) {
                 self.state.end_turn = Some(end_turn.as_bool().ok_or_else(|| {
-                    ProviderError::message(
+                    ProviderError::new(
+                        aifluxon_core::ProviderErrorCode::MalformedResponse,
                         "PROVIDER_MALFORMED_RESPONSE: end_turn must be a boolean.",
                     )
                 })?);
@@ -716,9 +722,12 @@ impl ResponsesTurnAssembler {
                     .state
                     .incomplete_reason
                     .unwrap_or_else(|| "incomplete".to_string());
-                return Err(ProviderError::message(format!(
-                    "PROVIDER_OUTPUT_INCOMPLETE: Responses stream ended incomplete: {reason}"
-                )));
+                return Err(ProviderError::new(
+                    aifluxon_core::ProviderErrorCode::OutputIncomplete,
+                    format!(
+                        "PROVIDER_OUTPUT_INCOMPLETE: Responses stream ended incomplete: {reason}"
+                    ),
+                ));
             }
             Some(ResponsesTerminalStatus::Failed) => {
                 return Err(ProviderError::message(
@@ -726,7 +735,7 @@ impl ResponsesTurnAssembler {
                 ));
             }
             None => {
-                return Err(ProviderError::message(
+                return Err(ProviderError::new(aifluxon_core::ProviderErrorCode::StreamClosed,
                     "PROVIDER_STREAM_CLOSED: Responses stream ended without an explicit terminal event.",
                 ));
             }

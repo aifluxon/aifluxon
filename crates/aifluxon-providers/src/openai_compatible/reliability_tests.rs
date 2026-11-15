@@ -288,3 +288,156 @@ fn wire_diagnostics_contain_only_termination_facts_and_counts() {
         }
     }
 }
+
+#[test]
+fn retry_and_diagnostic_classification_ignore_message_prefixes() {
+    use aifluxon_core::ProviderErrorCode;
+    let spoofed = ProviderError::message("PROVIDER_TRANSIENT_TRANSPORT: remote text");
+    assert!(!reliability::retryable_error(&spoofed));
+    assert_eq!(
+        diagnostics::failure_code(&spoofed),
+        "PROVIDER_RESPONSE_ERROR"
+    );
+    let structured = ProviderError::new(ProviderErrorCode::StreamClosed, "localized text");
+    assert!(reliability::retryable_error(&structured));
+    assert_eq!(
+        diagnostics::failure_code(&structured),
+        "PROVIDER_STREAM_CLOSED"
+    );
+    assert!(!reliability::retryable_error(&ProviderError::cancelled()));
+}
+
+#[tokio::test]
+async fn http_failure_metadata_survives_redaction_and_bounded_retries() {
+    use aifluxon_core::ProviderErrorCode;
+    for (status, code) in [
+        (429, ProviderErrorCode::RateLimited),
+        (503, ProviderErrorCode::TransientHttp),
+        (401, ProviderErrorCode::Http),
+    ] {
+        let (provider, script, request) = setup(
+            "custom",
+            OpenAiApiMode::ChatCompletions,
+            vec![(status, "secret upstream body".into())],
+            false,
+            Some(Duration::from_secs(61)),
+        );
+        let error = provider
+            .next_turn(request, Arc::new(NoopModelEventSink))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, code);
+        assert_eq!(error.http_status, Some(status));
+        assert_eq!(error.retry_after, Some(Duration::from_secs(61)));
+        assert!(!error.message.contains("secret"));
+        assert_eq!(*script.count.lock().unwrap(), 1);
+    }
+}
+
+#[tokio::test]
+async fn instance_proxy_configuration_routes_requests_and_redacts_credentials() {
+    use std::io::{BufRead, BufReader, Write};
+    let mut servers = Vec::new();
+    let mut providers = Vec::new();
+    for label in ["first", "second"] {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut config = OpenAiCompatibleConfig::new(
+            "custom",
+            "http://provider.invalid/v1",
+            label,
+            OpenAiApiMode::ChatCompletions,
+            false,
+        );
+        config.http_client_tuning.proxy_url = Some(format!(
+            "http://proxy-user:proxy-password@{}",
+            listener.local_addr().unwrap()
+        ));
+        config.http_client_tuning.http1_only = label == "first";
+        assert!(!format!("{config:?}").contains("proxy-password"));
+        servers.push(std::thread::spawn(move || {
+            let (socket, _) = listener.accept().unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut reader = BufReader::new(socket);
+            let mut headers = String::new();
+            loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" { break; }
+                headers.push_str(&line.to_ascii_lowercase());
+            }
+            assert!(headers.starts_with("post http://provider.invalid/"));
+            assert!(headers.contains(&format!("authorization: bearer {label}\r\n")));
+            assert!(headers.contains("proxy-authorization: basic "));
+            let body = r#"{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}"#;
+            write!(reader.get_mut(), "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        }));
+        providers.push(OpenAiCompatibleProvider::configured(config));
+    }
+    for provider in providers {
+        let (_, _, request) = setup(
+            "custom",
+            OpenAiApiMode::ChatCompletions,
+            vec![],
+            false,
+            None,
+        );
+        assert_eq!(
+            provider
+                .next_turn(request, Arc::new(NoopModelEventSink))
+                .await
+                .unwrap()
+                .text,
+            "ok"
+        );
+    }
+    for server in servers {
+        server.join().unwrap();
+    }
+    let tuning = crate::HttpClientTuning {
+        proxy_url: Some("http://secret-user:secret-password@[invalid".into()),
+        ..Default::default()
+    };
+    assert!(!format!("{tuning:?}").contains("secret-password"));
+    let error = ReqwestOpenAiTransport::new(tuning).client().unwrap_err();
+    assert!(!error.message.contains("secret-user"));
+    assert!(!error.message.contains("secret-password"));
+}
+
+#[tokio::test]
+async fn instance_read_timeout_is_applied_to_response_body() {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut buffer = [0; 4096];
+        assert!(socket.read(&mut buffer).unwrap() > 0);
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1024\r\n\r\n")
+            .unwrap();
+        socket.flush().unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+    });
+    let transport = ReqwestOpenAiTransport::new(crate::HttpClientTuning {
+        read_timeout: Duration::from_millis(25),
+        ..Default::default()
+    });
+    let error = transport
+        .execute(OpenAiWireRequest {
+            url,
+            api_key: "secret".into(),
+            extra_headers: vec![],
+            body: json!({}),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.code,
+        aifluxon_core::ProviderErrorCode::TransientTransport
+    );
+    assert!(!error.message.contains("secret"));
+    server.join().unwrap();
+}

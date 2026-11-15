@@ -25,3 +25,63 @@ OpenAI, DeepSeek, Qwen, Kimi, Gemini, Codex, and custom compatible providers sha
 `cargo test --workspace --locked` and `cargo clippy --workspace --all-targets --locked -- -D warnings`.
 
 The regression matrix covers 11 supported family/protocol routes: truncation recovery, invalid tool calls, bounded retries, and completion on an open socket. Further tests cover malformed events, output limits, visible-output replay suppression, cancellation, hosted operations, HTTP rate limiting, retry headers, and existing family replay/usage/artifact behavior. These are deterministic protocol/transport tests, not claims of live availability for every vendor.
+
+
+## Structured failures and instance HTTP settings
+
+`ProviderError::message(text)` remains an unclassified error and preserves its display text.
+Use `ProviderError::new(ProviderErrorCode::..., text)` for machine-readable failures; message
+prefixes do not trigger retries. Rust consumers matching `RunEvent::Failed` should include
+`..` or bind its new optional `error` field; `finish_failed` continues to emit ordinary message-only
+failures. HTTP failures carry `http_status` and `retry_after`. Redaction
+changes only the message. Failed events include optional structured metadata, and
+`RunHandle::result()` maps cancellation, rate limits, transient failures and exhausted budgets
+into `AifluxonErrorKind`. `AifluxonError::provider_error()` exposes the original metadata.
+Python failed events and `FailedError` expose the code, HTTP status and retry delay; the existing
+`FailedError` catch behavior is preserved.
+
+Each configured provider owns a reusable HTTP client. Set `OpenAiCompatibleConfig::http_client_tuning`
+for proxy, HTTP/1 preference, connect/read timeouts and idle-pool limits. For custom TLS roots,
+provide `ReqwestOpenAiTransport::with_client(client)` through `with_transport`. Keep authorization
+out of client defaults: credentials belong to individual requests. Proxy values are redacted in
+configuration debug output and configuration failures.
+
+JSON provider specifications accept an optional `http_client` object. Python's `Custom` accepts
+the same dictionary (or use `ProviderConfig.http_client` for other compatible providers):
+
+```python
+Custom("local-model", base_url="http://localhost:8080/v1", http_client={
+    "http1_only": False,
+    "connect_timeout_ms": 30000,
+    "read_timeout_ms": 180000,
+    "pool_idle_timeout_ms": 90000,
+    "pool_max_idle_per_host": 8,
+    "proxy_url": "http://localhost:3128",
+})
+```
+
+Timeouts are positive integer milliseconds; unknown fields and invalid types are rejected.
+Omitted settings retain existing defaults. A supplied transport can be shared intentionally
+between providers, while each request continues to supply its own credentials. `send_http`
+uses the provider's configured HTTP settings.
+
+## Runtime retention and tool replay
+
+`RunTable::new()` retains at most 128 terminal runs, in completion order, in addition to active
+runs. `with_terminal_capacity(n)` changes the limit. Event listeners pin a run until they drain;
+those pinned records are temporarily additional to the limit. Per-run notifications wake only
+that run's consumers, without idle timer polling. Dropping the receiver stops its forwarder.
+
+`release_run` reclaims event history, tool results and terminal operation payloads after current
+listeners drain. A lightweight snapshot (identity, state and last event sequence) remains until
+capacity eviction, so inspecting a recently completed Python run still works. Terminal operation
+history is empty after release. `remove_terminal_run` requests full eviction, deferred while an
+event listener is active; `prune_terminal_runs` applies the configured limit. The operation store
+also exposes explicit terminal removal and pruning for standalone use. Do not reuse evicted run
+IDs. Active runs and executing operation commits are not evicted.
+
+Tool claims atomically reserve an invocation ID before approval or execution. Concurrent duplicates
+are rejected and completed duplicates reuse the exact result, including multimodal content.
+Dropping an unstarted claim releases the reservation. Once execution begins, failures or cancellation
+retain a failure marker, because an interrupted side effect may already have happened. Replaying
+that ID cannot execute the side effect again. Executing new tools on a terminal run is rejected.

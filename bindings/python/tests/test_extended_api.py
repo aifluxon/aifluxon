@@ -509,3 +509,27 @@ def test_enum_and_positional_only_schema_contracts() -> None:
         @tool(input_schema={"type": "object"})
         def positional(value, /):
             return value
+
+
+def test_custom_http_client_configuration_is_forwarded_and_redacted() -> None:
+    from aifluxon import Custom
+
+    tuning = {"http1_only": False, "connect_timeout_ms": 1000, "read_timeout_ms": 3000,
+              "proxy_url": "http://user:proxy-secret@localhost:8080"}
+    provider = Custom("local", base_url="http://localhost/v1", http_client=tuning)
+    assert provider.to_spec()["http_client"] == tuning
+    assert "proxy-secret" not in repr(provider)
+    with pytest.raises(InvalidConfigurationError, match="http_client"):
+        Agent(Custom("local", base_url="http://localhost/v1", http_client={"read_timeout_ms": 0}))
+
+
+def test_structured_failed_event_preserves_metadata() -> None:
+    from aifluxon.events import event_from_payload
+
+    event = event_from_payload({"sequence": 2, "run_id": "run", "type": "failed", "message": "slow down",
+                                "error_code": "PROVIDER_RATE_LIMITED", "error_kind": "RateLimited",
+                                "http_status": 429, "retry_after_ms": 2000})
+    assert event.error_code == "PROVIDER_RATE_LIMITED"
+    assert event.error_kind == "RateLimited"
+    assert event.http_status == 429
+    assert event.retry_after_ms == 2000

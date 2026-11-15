@@ -184,13 +184,14 @@ fn register_compatible(
         .get("allow_cumulative_delta")
         .and_then(Value::as_bool)
         .unwrap_or(allow_cumulative_delta);
-    let config = OpenAiCompatibleConfig::new(
+    let mut config = OpenAiCompatibleConfig::new(
         ProviderId::new(provider_id),
         base_url,
         api_key,
         api_mode,
         cumulative,
     );
+    apply_http_tuning(spec, &mut config)?;
     let provider = OpenAiCompatibleProvider::configured(config);
     let id = ProviderId::new(provider_id);
     registry.register(id.clone(), provider).map_err(|error| {
@@ -231,6 +232,7 @@ fn register_custom(
     if let Some(cumulative) = spec.get("allow_cumulative_delta").and_then(Value::as_bool) {
         config.allow_cumulative_delta = cumulative;
     }
+    apply_http_tuning(spec, &mut config)?;
     let id = ProviderId::new(provider_id);
     registry
         .register(id.clone(), OpenAiCompatibleProvider::configured(config))
@@ -241,6 +243,24 @@ fn register_custom(
         provider_id: id,
         model,
     })
+}
+
+fn apply_http_tuning(
+    spec: &Value,
+    config: &mut OpenAiCompatibleConfig,
+) -> Result<(), AifluxonError> {
+    if let Some(value) = spec.get("http_client") {
+        config.http_client_tuning = serde_json::from_value(value.clone()).map_err(|_| {
+            AifluxonError::new(
+                AifluxonErrorKind::InvalidConfiguration,
+                "Invalid http_client configuration.",
+            )
+        })?;
+        aifluxon_providers::build_http_client(config.http_client_tuning.clone()).map_err(
+            |message| AifluxonError::new(AifluxonErrorKind::InvalidConfiguration, message),
+        )?;
+    }
+    Ok(())
 }
 
 fn parse_api_mode(
@@ -274,6 +294,39 @@ fn required_str<'a>(spec: &'a Value, field: &str) -> Result<&'a str, AifluxonErr
 mod tests {
     use super::*;
 
+    #[test]
+    fn json_http_tuning_is_optional_strict_and_redacts_invalid_proxy_values() {
+        let mut config = OpenAiCompatibleConfig::new(
+            "custom",
+            "http://localhost",
+            "key",
+            OpenAiApiMode::ChatCompletions,
+            false,
+        );
+        apply_http_tuning(&json!({}), &mut config).unwrap();
+        assert!(config.http_client_tuning.http1_only);
+        apply_http_tuning(&json!({"http_client": {"http1_only": false, "connect_timeout_ms": 1200, "read_timeout_ms": 3500, "pool_idle_timeout_ms": 7000, "pool_max_idle_per_host": 2}}), &mut config).unwrap();
+        assert!(!config.http_client_tuning.http1_only);
+        assert_eq!(
+            config.http_client_tuning.connect_timeout,
+            std::time::Duration::from_millis(1200)
+        );
+        assert_eq!(
+            config.http_client_tuning.read_timeout,
+            std::time::Duration::from_millis(3500)
+        );
+        for tuning in [
+            json!({"http1_only": "false"}),
+            json!({"read_timeout_ms": 0}),
+            json!({"unknown": true}),
+            json!({"proxy_url": "http://user:secret@[invalid"}),
+        ] {
+            let error =
+                apply_http_tuning(&json!({"http_client": tuning}), &mut config).unwrap_err();
+            assert_eq!(error.kind(), AifluxonErrorKind::InvalidConfiguration);
+            assert!(!error.message().contains("secret"));
+        }
+    }
     #[test]
     fn controlled_spec_registers_without_network_configuration() {
         let registry = ProviderRegistry::new();

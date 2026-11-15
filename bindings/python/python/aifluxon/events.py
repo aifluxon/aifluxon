@@ -103,6 +103,10 @@ class Failed:
     run_id: str
     message: str
     type: str = "failed"
+    error_code: str | None = None
+    error_kind: str | None = None
+    http_status: int | None = None
+    retry_after_ms: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,7 +189,11 @@ def event_from_payload(payload: Mapping[str, Any]) -> Event:
         output = payload.get("output") or []
         return Completed(sequence=sequence, run_id=run_id, output=list(output))
     if event_type == "failed":
-        return Failed(sequence=sequence, run_id=run_id, message=str(payload.get("message") or ""))
+        return Failed(
+            sequence=sequence, run_id=run_id, message=str(payload.get("message") or ""),
+            error_code=payload.get("error_code"), error_kind=payload.get("error_kind"),
+            http_status=payload.get("http_status"), retry_after_ms=payload.get("retry_after_ms"),
+        )
     if event_type == "cancelled":
         return Cancelled(sequence=sequence, run_id=run_id)
     raise ValueError(f"Unknown run event type `{event_type}`.")

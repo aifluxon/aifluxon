@@ -69,9 +69,77 @@ pub trait ToolExecutor: Send + Sync {
     ) -> Result<ToolResult, ToolExecutionError>;
 }
 
+enum ToolEntry {
+    InFlight,
+    Completed(ToolResult),
+    Failed(ToolExecutionError),
+}
+
 #[derive(Default)]
 pub struct ToolLedger {
-    completed: Mutex<HashMap<ToolInvocationId, ToolResult>>,
+    entries: Mutex<HashMap<ToolInvocationId, ToolEntry>>,
+}
+
+pub enum ToolClaimOutcome<'a> {
+    Cached(ToolResult),
+    Reserved(ToolClaim<'a>),
+}
+
+/// An unstarted reservation is released on drop. Once execution starts, an interrupted
+/// or failed invocation is retained: its side effects cannot safely be retried.
+pub struct ToolClaim<'a> {
+    ledger: &'a ToolLedger,
+    id: ToolInvocationId,
+    started: bool,
+    settled: bool,
+}
+
+impl ToolClaim<'_> {
+    pub fn start(&mut self) {
+        self.started = true;
+    }
+
+    pub fn complete(mut self, result: ToolResult) {
+        self.ledger
+            .entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(self.id, ToolEntry::Completed(result));
+        self.settled = true;
+    }
+
+    pub fn fail(mut self, error: ToolExecutionError) {
+        self.ledger
+            .entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(self.id, ToolEntry::Failed(error));
+        self.settled = true;
+    }
+}
+
+impl Drop for ToolClaim<'_> {
+    fn drop(&mut self) {
+        if self.settled {
+            return;
+        }
+        let mut entries = self
+            .ledger
+            .entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if self.started {
+            entries.insert(
+                self.id,
+                ToolEntry::Failed(ToolExecutionError::Failed(
+                    "Tool execution was interrupted; its side effect will not be repeated."
+                        .to_string(),
+                )),
+            );
+        } else {
+            entries.remove(&self.id);
+        }
+    }
 }
 
 impl ToolLedger {
@@ -80,45 +148,104 @@ impl ToolLedger {
     }
 
     pub fn get(&self, invocation_id: &ToolInvocationId) -> Option<ToolResult> {
-        self.completed
+        match self
+            .entries
             .lock()
-            .ok()
-            .and_then(|completed| completed.get(invocation_id).cloned())
+            .unwrap_or_else(|e| e.into_inner())
+            .get(invocation_id)
+        {
+            Some(ToolEntry::Completed(result)) => Some(result.clone()),
+            _ => None,
+        }
     }
 
+    /// Imports a completed result only when no invocation already owns the ID.
     pub fn record(&self, invocation_id: ToolInvocationId, result: ToolResult) {
-        if let Ok(mut completed) = self.completed.lock() {
-            completed.insert(invocation_id, result);
+        self.entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(invocation_id)
+            .or_insert(ToolEntry::Completed(result));
+    }
+
+    /// Concurrent duplicates are rejected; completed duplicates reuse the exact result.
+    pub fn claim(&self, id: ToolInvocationId) -> Result<ToolClaimOutcome<'_>, ToolExecutionError> {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        match entries.get(&id) {
+            Some(ToolEntry::Completed(result)) => {
+                return Ok(ToolClaimOutcome::Cached(result.clone()))
+            }
+            Some(ToolEntry::InFlight) => return Err(ToolExecutionError::RejectedDuplicate),
+            Some(ToolEntry::Failed(error)) => return Err(error.clone()),
+            None => {}
         }
+        entries.insert(id, ToolEntry::InFlight);
+        Ok(ToolClaimOutcome::Reserved(ToolClaim {
+            ledger: self,
+            id,
+            started: false,
+            settled: false,
+        }))
     }
 
     pub fn execute_once<F>(
         &self,
-        invocation_id: ToolInvocationId,
+        id: ToolInvocationId,
         execute: F,
     ) -> Result<ToolResult, ToolExecutionError>
     where
         F: FnOnce() -> Result<ToolResult, ToolExecutionError>,
     {
-        let mut completed = self
-            .completed
-            .lock()
-            .map_err(|_| ToolExecutionError::Failed("Tool ledger is unavailable.".to_string()))?;
-        if let Some(cached) = completed.get(&invocation_id) {
-            return Ok(cached.clone());
+        let mut claim = match self.claim(id)? {
+            ToolClaimOutcome::Cached(result) => return Ok(result),
+            ToolClaimOutcome::Reserved(claim) => claim,
+        };
+        claim.start();
+        match execute() {
+            Ok(result) => {
+                claim.complete(result.clone());
+                Ok(result)
+            }
+            Err(error) => {
+                claim.fail(error.clone());
+                Err(error)
+            }
         }
-        // Keep the claim and execution atomic for the synchronous executor seam. This prevents
-        // concurrent provider replay from running the same side effect twice.
-        let result = execute()?;
-        completed.insert(invocation_id, result.clone());
-        Ok(result)
+    }
+
+    pub async fn execute_once_async<F, Fut>(
+        &self,
+        id: ToolInvocationId,
+        execute: F,
+    ) -> Result<ToolResult, ToolExecutionError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<ToolResult, ToolExecutionError>>,
+    {
+        let mut claim = match self.claim(id)? {
+            ToolClaimOutcome::Cached(result) => return Ok(result),
+            ToolClaimOutcome::Reserved(claim) => claim,
+        };
+        claim.start();
+        match execute().await {
+            Ok(result) => {
+                claim.complete(result.clone());
+                Ok(result)
+            }
+            Err(error) => {
+                claim.fail(error.clone());
+                Err(error)
+            }
+        }
     }
 
     pub fn execution_count(&self) -> usize {
-        self.completed
+        self.entries
             .lock()
-            .map(|completed| completed.len())
-            .unwrap_or(0)
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .filter(|entry| matches!(entry, ToolEntry::Completed(_)))
+            .count()
     }
 }
 
@@ -164,6 +291,103 @@ mod tests {
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+
+    #[tokio::test]
+    async fn concurrent_async_duplicate_is_rejected_and_completed_result_is_reused() {
+        let ledger = Arc::new(ToolLedger::new());
+        let id = ToolInvocationId::new();
+        let executions = Arc::new(AtomicUsize::new(0));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
+        let worker = {
+            let ledger = ledger.clone();
+            let executions = executions.clone();
+            tokio::spawn(async move {
+                ledger
+                    .execute_once_async(id, || async {
+                        executions.fetch_add(1, Ordering::SeqCst);
+                        started_tx.send(()).unwrap();
+                        finish_rx.await.unwrap();
+                        Ok(ToolResult::with_content(
+                            json!("done"),
+                            vec![ContentPart::Text("result".into())],
+                        ))
+                    })
+                    .await
+                    .unwrap()
+            })
+        };
+        started_rx.await.unwrap();
+        assert!(matches!(
+            ledger
+                .execute_once_async(id, || async { panic!("duplicate executed") })
+                .await,
+            Err(ToolExecutionError::RejectedDuplicate)
+        ));
+        // Synchronous callers and imported records use the same reservation.
+        ledger.record(
+            id,
+            ToolResult::from_value(json!("must not overwrite claim")),
+        );
+        assert!(matches!(
+            ledger.execute_once(id, || panic!("duplicate executed")),
+            Err(ToolExecutionError::RejectedDuplicate)
+        ));
+        finish_tx.send(()).unwrap();
+        let first = worker.await.unwrap();
+        let cached = ledger
+            .execute_once_async(id, || async { panic!("cached invocation executed") })
+            .await
+            .unwrap();
+        assert_eq!(first.content, cached.content);
+        assert_eq!(cached.value, json!("done"));
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn aborted_or_failed_async_execution_cannot_repeat_side_effects() {
+        let ledger = Arc::new(ToolLedger::new());
+        let id = ToolInvocationId::new();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let worker = {
+            let ledger = ledger.clone();
+            tokio::spawn(async move {
+                ledger
+                    .execute_once_async(id, || async {
+                        started_tx.send(()).unwrap();
+                        std::future::pending().await
+                    })
+                    .await
+            })
+        };
+        started_rx.await.unwrap();
+        worker.abort();
+        assert!(worker.await.unwrap_err().is_cancelled());
+        assert!(ledger
+            .execute_once_async(id, || async { panic!("interrupted effect repeated") })
+            .await
+            .is_err());
+        let failed = ToolInvocationId::new();
+        let error = ToolExecutionError::Failed("effect may already have happened".into());
+        assert_eq!(
+            ledger
+                .execute_once_async(failed, || async { Err(error.clone()) })
+                .await
+                .unwrap_err(),
+            error
+        );
+        assert_eq!(
+            ledger
+                .execute_once(failed, || panic!("failed effect repeated"))
+                .unwrap_err(),
+            error
+        );
+        let unstarted = ToolInvocationId::new();
+        drop(ledger.claim(unstarted).unwrap());
+        assert!(ledger
+            .execute_once(unstarted, || Ok(ToolResult::from_value(Value::Null)))
+            .is_ok());
+    }
 
     fn descriptor() -> ToolDescriptor {
         ToolDescriptor {

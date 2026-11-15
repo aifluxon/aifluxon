@@ -2,7 +2,7 @@ use aifluxon_core::{
     OperationDecision, OperationId, OperationMode, OperationSnapshot, OperationState,
     PendingOperation, RunId,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::SystemTime;
 use tokio::sync::Notify;
@@ -59,6 +59,7 @@ struct OperationRecord {
 struct OperationStoreInner {
     operations: HashMap<OperationId, OperationRecord>,
     terminal_runs: HashSet<RunId>,
+    terminal_order: VecDeque<RunId>,
 }
 
 #[derive(Clone, Default)]
@@ -328,7 +329,9 @@ impl InMemoryOperationStore {
     pub fn cancel_run(&self, run_id: &RunId) -> Result<usize, OperationError> {
         let notifies = {
             let mut inner = self.lock()?;
-            inner.terminal_runs.insert(*run_id);
+            if inner.terminal_runs.insert(*run_id) {
+                inner.terminal_order.push_back(*run_id);
+            }
             inner
                 .operations
                 .values_mut()
@@ -378,6 +381,58 @@ impl InMemoryOperationStore {
         Ok(count)
     }
 
+    /// Reclaims terminal operation payloads while keeping the run closed to new operations.
+    pub fn clear_terminal_run_records(&self, run_id: &RunId) -> Result<usize, OperationError> {
+        let mut inner = self.lock()?;
+        if !inner.terminal_runs.contains(run_id) {
+            return Ok(0);
+        }
+        let before = inner.operations.len();
+        inner
+            .operations
+            .retain(|_, record| record.operation.run_id != *run_id || !record.state.is_terminal());
+        Ok(before - inner.operations.len())
+    }
+
+    /// Removes records and the terminal marker. Run IDs must not be reused after eviction.
+    pub fn remove_terminal_run(&self, run_id: &RunId) -> Result<bool, OperationError> {
+        let mut inner = self.lock()?;
+        if !inner.terminal_runs.contains(run_id) {
+            return Ok(false);
+        }
+        // Never evict an effect while its commit is executing.
+        if inner
+            .operations
+            .values()
+            .any(|record| record.operation.run_id == *run_id && !record.state.is_terminal())
+        {
+            return Ok(false);
+        }
+        inner
+            .operations
+            .retain(|_, record| record.operation.run_id != *run_id);
+        inner.terminal_runs.remove(run_id);
+        inner.terminal_order.retain(|id| id != run_id);
+        Ok(true)
+    }
+
+    pub fn prune_terminal_runs(&self, retain: usize) -> Result<usize, OperationError> {
+        let targets = {
+            let inner = self.lock()?;
+            inner
+                .terminal_order
+                .iter()
+                .take(inner.terminal_runs.len().saturating_sub(retain))
+                .copied()
+                .collect::<Vec<_>>()
+        };
+        let mut removed = 0;
+        for run_id in targets {
+            removed += usize::from(self.remove_terminal_run(&run_id)?);
+        }
+        Ok(removed)
+    }
+
     pub fn mark_run_terminal(&self, run_id: &RunId) -> Result<usize, OperationError> {
         self.cancel_run(run_id)
     }
@@ -401,6 +456,44 @@ mod tests {
     use aifluxon_core::{PendingOperationDraft, ToolEffect, ToolInvocationId};
     use serde_json::{json, Value};
     use std::time::Duration;
+
+    #[test]
+    fn release_clears_payloads_preserves_terminal_marker_and_reclaims_it_on_eviction() {
+        let store = InMemoryOperationStore::new();
+        let operation = operation(OperationMode::BlockingApproval);
+        let run_id = operation.run_id;
+        store.register(operation.clone()).unwrap();
+        store.mark_run_terminal(&run_id).unwrap();
+        assert_eq!(store.clear_terminal_run_records(&run_id).unwrap(), 1);
+        assert!(store.snapshot(&run_id).unwrap().is_empty());
+        assert_eq!(store.register(operation), Err(OperationError::RunTerminal));
+        assert!(store.remove_terminal_run(&run_id).unwrap());
+        let inner = store.lock().unwrap();
+        assert!(inner.operations.is_empty());
+        assert!(inner.terminal_runs.is_empty());
+        assert!(inner.terminal_order.is_empty());
+    }
+
+    #[test]
+    fn terminal_removal_reclaims_records_and_markers_but_preserves_active_runs() {
+        let store = InMemoryOperationStore::new();
+        let active = RunId::new();
+        let mut runs = Vec::new();
+        for _ in 0..5 {
+            let run_id = RunId::new();
+            store.mark_run_terminal(&run_id).unwrap();
+            runs.push(run_id);
+        }
+        assert!(!store.remove_terminal_run(&active).unwrap());
+        assert_eq!(store.prune_terminal_runs(2).unwrap(), 3);
+        let inner = store.lock().unwrap();
+        assert_eq!(inner.terminal_runs.len(), 2);
+        assert_eq!(inner.terminal_order.len(), 2);
+        assert!(inner.terminal_runs.contains(&runs[4]));
+        drop(inner);
+        assert!(store.remove_terminal_run(&runs[4]).unwrap());
+        assert!(!store.remove_terminal_run(&runs[4]).unwrap());
+    }
 
     fn operation(mode: OperationMode) -> PendingOperation {
         PendingOperationDraft {

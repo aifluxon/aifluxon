@@ -41,6 +41,7 @@ pub enum RunEvent {
     },
     Failed {
         message: String,
+        error: Option<crate::ProviderError>,
     },
     Cancelled,
 }

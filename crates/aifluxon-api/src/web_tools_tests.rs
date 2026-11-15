@@ -185,7 +185,7 @@ async fn web_roundtrip(mode: OpenAiApiMode) {
                 RunEvent::ToolStarted { name, .. } => tools_started.push(name),
                 RunEvent::ToolFinished { result, .. } => assert_eq!(result["ok"], true),
                 RunEvent::Completed { .. } => completed += 1,
-                RunEvent::Failed { message } => panic!("{message}"),
+                RunEvent::Failed { message, .. } => panic!("{message}"),
                 _ => {}
             }
         }
@@ -324,7 +324,7 @@ async fn provider_rejection_does_not_switch_the_selected_api_mode() {
         let mut failure = None;
         tokio::time::timeout(Duration::from_secs(5), async {
             while let Some(event) = handle.events().next().await {
-                if let RunEvent::Failed { message } = event.event {
+                if let RunEvent::Failed { message, .. } = event.event {
                     failure = Some(message);
                 }
             }

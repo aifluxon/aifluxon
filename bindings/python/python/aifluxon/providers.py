@@ -17,6 +17,7 @@ class ProviderConfig:
     turns: tuple[Mapping[str, Any], ...] | None = None
     allow_cumulative_delta: bool | None = None
     delay_ms: int | None = None
+    http_client: Mapping[str, Any] | None = field(default=None, repr=False)
 
     def to_spec(self) -> dict[str, Any]:
         spec: dict[str, Any] = {"kind": self.kind, "model": self.model}
@@ -36,6 +37,8 @@ class ProviderConfig:
             spec["turns"] = [dict(item) for item in self.turns]
         if self.delay_ms is not None:
             spec["delay_ms"] = self.delay_ms
+        if self.http_client is not None:
+            spec["http_client"] = dict(self.http_client)
         return spec
 
 
@@ -165,6 +168,7 @@ def Custom(
     provider_id: str = "custom",
     api_mode: str | None = None,
     allow_cumulative_delta: bool | None = None,
+    http_client: Mapping[str, Any] | None = None,
 ) -> ProviderConfig:
     return ProviderConfig(
         kind="custom",
@@ -174,6 +178,7 @@ def Custom(
         api_mode=api_mode,
         provider_id=provider_id,
         allow_cumulative_delta=allow_cumulative_delta,
+        http_client=http_client,
     )
 
 

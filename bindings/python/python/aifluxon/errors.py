@@ -11,6 +11,9 @@ class AifluxonError(Exception):
         super().__init__(message)
         self.message = message
         self.kind = kind
+        self.error_code: str | None = None
+        self.http_status: int | None = None
+        self.retry_after_ms: int | None = None
 
     def __str__(self) -> str:
         return self.message
@@ -92,6 +95,8 @@ _KIND_MAP: dict[str, type[AifluxonError]] = {
     "InvalidConfiguration": InvalidConfigurationError,
     "InvalidRequest": InvalidRequestError,
     "Provider": ProviderError,
+    "RateLimited": ProviderError,
+    "Transient": ProviderError,
     "Tool": ToolError,
     "PolicyDenied": PolicyError,
     "OperationPending": PolicyError,

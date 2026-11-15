@@ -336,7 +336,7 @@ The root `Cargo.lock` is tracked so release wheels rebuild against the same Rust
 
 ## Status
 
-AIFLUXON `0.2.x` is **experimental**. Public APIs may still evolve before a stable release.
+AIFLUXON `0.3.0` is **experimental**. Public APIs may still evolve before a stable release.
 
 ## License
 

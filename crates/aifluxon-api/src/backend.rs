@@ -13,13 +13,14 @@ use aifluxon_runtime::{
 use aifluxon_runtime::{AgentCoordinator, RunTable, RunTableError};
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AifluxonErrorKind {
     InvalidConfiguration,
     InvalidRequest,
     Provider,
+    RateLimited,
+    Transient,
     Tool,
     PolicyDenied,
     OperationPending,
@@ -37,6 +38,7 @@ pub enum AifluxonErrorKind {
 pub struct AifluxonError {
     kind: AifluxonErrorKind,
     message: String,
+    provider_error: Option<aifluxon_core::ProviderError>,
 }
 
 impl AifluxonError {
@@ -44,7 +46,12 @@ impl AifluxonError {
         Self {
             kind,
             message: message.into(),
+            provider_error: None,
         }
+    }
+
+    pub fn provider_error(&self) -> Option<&aifluxon_core::ProviderError> {
+        self.provider_error.as_ref()
     }
 
     pub fn kind(&self) -> AifluxonErrorKind {
@@ -53,6 +60,24 @@ impl AifluxonError {
 
     pub fn message(&self) -> &str {
         &self.message
+    }
+}
+
+impl From<aifluxon_core::ProviderError> for AifluxonError {
+    fn from(error: aifluxon_core::ProviderError) -> Self {
+        use aifluxon_core::ProviderErrorCode;
+        let kind = match error.code {
+            ProviderErrorCode::Cancelled => AifluxonErrorKind::Cancelled,
+            ProviderErrorCode::RateLimited => AifluxonErrorKind::RateLimited,
+            ProviderErrorCode::BudgetExceeded => AifluxonErrorKind::BudgetExceeded,
+            code if code.is_retryable() => AifluxonErrorKind::Transient,
+            _ => AifluxonErrorKind::Provider,
+        };
+        Self {
+            kind,
+            message: error.message.clone(),
+            provider_error: Some(error),
+        }
     }
 }
 
@@ -280,6 +305,9 @@ impl Aifluxon {
                     }
                 }
                 Err(error) => {
+                    if error.code == aifluxon_core::ProviderErrorCode::Cancelled {
+                        let _ = table.cancel(&context.run_id);
+                    }
                     let state = table
                         .snapshot(&context.run_id)
                         .map(|snapshot| snapshot.state)
@@ -300,13 +328,14 @@ impl Aifluxon {
                         })
                         .await;
                     if state != RunState::Cancelled {
-                        let failure = match checkpoint_result {
+                        let mut error = error;
+                        error.message = match checkpoint_result {
                             Ok(()) => error.to_string(),
                             Err(store_error) => format!(
                                 "{error}; additionally failed to persist the run checkpoint: {store_error}"
                             ),
                         };
-                        let _ = table.finish_failed(&context.run_id, failure);
+                        let _ = table.finish_provider_error(&context.run_id, error);
                     }
                 }
             }
@@ -315,6 +344,15 @@ impl Aifluxon {
             context,
             crate::RunEventStream::from_receiver(event_receiver),
         ))
+    }
+
+    /// Reclaims heavy runtime history after event consumers drain. Recent snapshots remain
+    /// available until the RunTable terminal capacity evicts them.
+    pub fn release_run(&self, run_id: RunId) -> Result<(), AifluxonError> {
+        self.configuration
+            .run_table
+            .release_run(&run_id)
+            .map_err(map_runtime_error)
     }
 
     pub async fn cancel(&self, run_id: RunId) -> Result<(), AifluxonError> {
@@ -518,11 +556,15 @@ fn spawn_event_forwarder(
     sender: tokio::sync::mpsc::Sender<aifluxon_core::RunEventEnvelope>,
     sink: Arc<dyn RunEventSink>,
 ) {
+    // Register synchronously so even an immediately completed run is pinned before cleanup.
+    let Ok(listener) = table.event_listener(&run_id) else {
+        return;
+    };
     tokio::spawn(async move {
         let mut sequence = 0;
         loop {
-            let notify = table.event_notify();
-            let notified = notify.notified();
+            // Create the waiter before reading history so notify_waiters cannot be missed.
+            let notified = listener.notified();
             let events = match table.events_since(&run_id, sequence) {
                 Ok(events) => events,
                 Err(_) => return,
@@ -530,7 +572,7 @@ fn spawn_event_forwarder(
             if events.is_empty() {
                 tokio::select! {
                     _ = notified => {}
-                    _ = tokio::time::sleep(Duration::from_millis(5)) => {}
+                    _ = sender.closed() => return,
                 }
                 continue;
             }

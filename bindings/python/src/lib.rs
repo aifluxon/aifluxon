@@ -180,6 +180,9 @@ impl NativeAgent {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(run_id);
+        if let Ok(run_id) = RunId::parse(run_id) {
+            let _ = self.inner.release_run(run_id);
+        }
     }
 
     fn register_tool(&self, descriptor_json: &str, callback: Py<PyAny>) -> PyResult<()> {

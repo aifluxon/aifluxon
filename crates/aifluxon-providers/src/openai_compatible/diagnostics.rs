@@ -31,17 +31,7 @@ pub(super) struct StreamDiagnostics {
 }
 
 pub(super) fn failure_code(error: &ProviderError) -> &str {
-    let code = error.message.split(':').next().unwrap_or_default();
-    if code.starts_with("PROVIDER_")
-        && code.len() <= 64
-        && code
-            .bytes()
-            .all(|byte| byte.is_ascii_uppercase() || byte == b'_')
-    {
-        code
-    } else {
-        "PROVIDER_RESPONSE_ERROR"
-    }
+    error.code.as_str()
 }
 
 impl StreamDiagnostics {

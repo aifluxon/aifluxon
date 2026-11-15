@@ -243,11 +243,13 @@ Default base URL: `https://generativelanguage.googleapis.com/v1beta/openai`.
 
 Default API mode: `responses`. Default base URL: `https://api.openai.com/v1`.
 
-### `Custom(model, *, base_url, api_key="", provider_id="custom", api_mode=None, allow_cumulative_delta=None)`
+### `Custom(model, *, base_url, api_key="", provider_id="custom", api_mode=None, allow_cumulative_delta=None, http_client=None)`
 
 `base_url` is required.
 
 `allow_cumulative_delta` overrides Rust's custom-provider default (`True`). Set `False` for endpoints that send ordinary incremental deltas which may legitimately repeat earlier text.
+
+`http_client` optionally sets `http1_only`, positive `connect_timeout_ms`, `read_timeout_ms`, `pool_idle_timeout_ms`, `pool_max_idle_per_host`, and `proxy_url`. Settings apply to this provider's reusable client; proxy values are omitted from its Python representation. See [HTTP configuration and retention](../api-reliability.md) for defaults and lifecycle behavior.
 
 ### `ControlledProvider(responses=None, *, turns=None, provider_id="controlled", model="controlled-model", delay_ms=None)`
 

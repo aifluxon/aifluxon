@@ -338,14 +338,18 @@ async fn pooled_transport_reuses_connection_without_reusing_credentials() {
             reader.get_mut().flush().unwrap();
         }
     });
+    let transport = Arc::new(ReqwestOpenAiTransport::default());
     for credential in ["first-credential", "second-credential"] {
-        let provider = OpenAiCompatibleProvider::configured(OpenAiCompatibleConfig::new(
-            "deepseek",
-            &endpoint,
-            credential,
-            OpenAiApiMode::ChatCompletions,
-            false,
-        ));
+        let provider = OpenAiCompatibleProvider::with_transport(
+            OpenAiCompatibleConfig::new(
+                "deepseek",
+                &endpoint,
+                credential,
+                OpenAiApiMode::ChatCompletions,
+                false,
+            ),
+            transport.clone(),
+        );
         let (_, _, request) = setup(Vec::new(), false);
         assert_eq!(
             provider

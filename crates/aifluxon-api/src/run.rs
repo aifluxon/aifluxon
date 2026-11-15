@@ -36,6 +36,7 @@ impl RunHandle {
         let mut output = Vec::new();
         let mut usage = None;
         let mut failure = None;
+        let mut provider_error = None;
         let mut state = None;
         while let Some(envelope) = self.events.next().await {
             match envelope.event {
@@ -44,13 +45,17 @@ impl RunHandle {
                     output = messages;
                     state = Some(RunState::Completed);
                 }
-                RunEvent::Failed { message } => {
+                RunEvent::Failed { message, error } => {
+                    provider_error = error;
                     failure = Some(message);
                     state = Some(RunState::Failed);
                 }
                 RunEvent::Cancelled => state = Some(RunState::Cancelled),
                 _ => {}
             }
+        }
+        if let Some(error) = provider_error {
+            return Err(error.into());
         }
         terminal_result(
             self.context.run_id,

@@ -156,7 +156,10 @@ impl AgentCoordinator {
         );
         loop {
             self.consume_model_round().map_err(|error| {
-                ProviderError::message(format!("Agent loop budget exceeded: {:?}", error.kind))
+                ProviderError::new(
+                    aifluxon_core::ProviderErrorCode::BudgetExceeded,
+                    format!("Agent loop budget exceeded: {:?}", error.kind),
+                )
             })?;
             let turn = provider.next_turn(request.clone(), sink.clone()).await?;
             self.handle_model_terminal(&turn)?;
@@ -177,7 +180,10 @@ impl AgentCoordinator {
             request.messages.push(assistant_message(&turn));
             for call in &turn.tool_calls {
                 self.consume_tool_invocation().map_err(|error| {
-                    ProviderError::message(format!("Agent loop budget exceeded: {:?}", error.kind))
+                    ProviderError::new(
+                        aifluxon_core::ProviderErrorCode::BudgetExceeded,
+                        format!("Agent loop budget exceeded: {:?}", error.kind),
+                    )
                 })?;
                 let invocation_id = call.id.hyphenated();
                 let result = self.execute_once_recorded(&invocation_id, || execute(call));
@@ -208,13 +214,16 @@ impl AgentCoordinator {
         );
         loop {
             if cancellation.is_cancelled() {
-                return Err(ProviderError::message("Run was cancelled."));
+                return Err(ProviderError::cancelled());
             }
             self.consume_model_round().map_err(|error| {
-                ProviderError::message(format!("Agent loop budget exceeded: {:?}", error.kind))
+                ProviderError::new(
+                    aifluxon_core::ProviderErrorCode::BudgetExceeded,
+                    format!("Agent loop budget exceeded: {:?}", error.kind),
+                )
             })?;
             let turn = tokio::select! {
-                _ = cancellation.cancelled() => return Err(ProviderError::message("Run was cancelled.")),
+                _ = cancellation.cancelled() => return Err(ProviderError::cancelled()),
                 result = provider.next_turn(request.clone(), sink.clone()) => result?,
             };
             self.handle_model_terminal(&turn)?;
@@ -303,15 +312,22 @@ impl AgentCoordinator {
         cancellation: crate::RunCancellationToken,
     ) -> Result<Message, ProviderError> {
         self.consume_tool_invocation().map_err(|error| {
-            ProviderError::message(format!("Agent loop budget exceeded: {:?}", error.kind))
+            ProviderError::new(
+                aifluxon_core::ProviderErrorCode::BudgetExceeded,
+                format!("Agent loop budget exceeded: {:?}", error.kind),
+            )
         })?;
-        if let Some(result) = self
+        let ledger = self
             .run_table
-            .cached_tool_execution(&self.run_id, &call.id)
+            .tool_ledger(&self.run_id)
+            .map_err(|error| ProviderError::message(error.message()))?;
+        let mut claim = match ledger
+            .claim(call.id)
             .map_err(|error| ProviderError::message(error.message()))?
         {
-            return Ok(tool_message(&call, result));
-        }
+            crate::ToolClaimOutcome::Cached(result) => return Ok(tool_message(&call, result)),
+            crate::ToolClaimOutcome::Reserved(claim) => claim,
+        };
         let raw_arguments = serde_json::to_string(&call.arguments).map_err(|error| {
             ProviderError::message(format!("Tool arguments are invalid: {error}"))
         })?;
@@ -367,13 +383,13 @@ impl AgentCoordinator {
                         .operations()
                         .wait(&self.run_id, &operation.id)
                         .await
-                        .map_err(|error| ProviderError::message(error.message()))?,
+                        .map_err(operation_provider_error)?,
                     OperationMode::DeferredCommit => self
                         .run_table
                         .operations()
                         .wait_for_commit_or_reject(&self.run_id, &operation.id)
                         .await
-                        .map_err(|error| ProviderError::message(error.message()))?,
+                        .map_err(operation_provider_error)?,
                 };
                 match host_decision {
                     OperationDecision::Approve { .. } => self
@@ -406,14 +422,19 @@ impl AgentCoordinator {
                 },
             )
             .map_err(|error| ProviderError::message(error.message()))?;
+        if cancellation.is_cancelled() {
+            return Err(ProviderError::cancelled());
+        }
+        claim.start();
         let execution = tokio::select! {
-            _ = cancellation.cancelled() => Err(ProviderError::message("Run was cancelled.")),
+            _ = cancellation.cancelled() => Err(ProviderError::cancelled()),
             result = executor.execute(invocation, ToolExecutionContext) => result
                 .map_err(|error| ProviderError::message(error.message())),
         };
         let result = match execution {
             Ok(result) => result,
             Err(error) => {
+                claim.fail(ToolExecutionError::Failed(error.message.clone()));
                 if let Some((operation_id, mode)) = approved_operation {
                     let _ = finish_host_operation(
                         &self.run_table,
@@ -426,13 +447,11 @@ impl AgentCoordinator {
                 return Err(error);
             }
         };
+        claim.complete(result.clone());
         if let Some((operation_id, mode)) = approved_operation {
             finish_host_operation(&self.run_table, &self.run_id, operation_id, mode, Ok(()))
                 .map_err(|error| ProviderError::message(error.message()))?;
         }
-        self.run_table
-            .record_tool_execution(&self.run_id, call.id, result.clone())
-            .map_err(|error| ProviderError::message(error.message()))?;
         self.run_table
             .emit(
                 &self.run_id,
@@ -476,6 +495,14 @@ impl AgentCoordinator {
     }
 }
 
+fn operation_provider_error(error: crate::OperationError) -> ProviderError {
+    if error == crate::OperationError::Cancelled {
+        ProviderError::cancelled()
+    } else {
+        ProviderError::message(error.message())
+    }
+}
+
 fn finish_host_operation(
     table: &RunTable,
     run_id: &aifluxon_core::RunId,
@@ -502,10 +529,11 @@ fn finish_host_operation(
 fn validate_terminal(turn: &ModelTurn) -> Result<(), ProviderError> {
     match turn.terminal {
         ProviderTerminal::Cancelled => {
-            return Err(ProviderError::message("Run was cancelled."));
+            return Err(ProviderError::cancelled());
         }
         ProviderTerminal::Error => {
-            return Err(ProviderError::message(
+            return Err(ProviderError::new(
+                aifluxon_core::ProviderErrorCode::TerminalError,
                 "PROVIDER_TERMINAL_ERROR: Provider ended the model turn with an error.",
             ));
         }
@@ -514,7 +542,8 @@ fn validate_terminal(turn: &ModelTurn) -> Result<(), ProviderError> {
             return Ok(());
         }
         _ => {
-            return Err(ProviderError::message(
+            return Err(ProviderError::new(
+                aifluxon_core::ProviderErrorCode::InvalidTurn,
                 "PROVIDER_INVALID_TURN: Terminal state does not match the tool calls.",
             ));
         }
@@ -528,7 +557,7 @@ fn validate_terminal(turn: &ModelTurn) -> Result<(), ProviderError> {
             || !ids.insert(call.id)
             || !wire_ids.insert(call.wire_call_id())
         {
-            return Err(ProviderError::message(
+            return Err(ProviderError::new(aifluxon_core::ProviderErrorCode::InvalidToolCall,
                 "PROVIDER_INVALID_TOOL_CALL: Tool calls must have a name, object arguments, and unique identifiers.",
             ));
         }
@@ -583,6 +612,110 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
+    struct PausedTool {
+        executions: Arc<AtomicUsize>,
+        started: tokio::sync::Notify,
+        finish: tokio::sync::Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::ToolExecutor for PausedTool {
+        async fn execute(
+            &self,
+            _: crate::ToolInvocation,
+            _: ToolExecutionContext,
+        ) -> Result<ToolResult, ToolExecutionError> {
+            self.executions.fetch_add(1, Ordering::SeqCst);
+            self.started.notify_one();
+            self.finish.notified().await;
+            Ok(ToolResult::from_value(serde_json::json!({"done": true})))
+        }
+    }
+
+    #[tokio::test]
+    async fn registered_tool_reserves_before_await_and_reuses_success_after_duplicate_rejection() {
+        let coordinator = AgentCoordinator::new();
+        let tools = Arc::new(ToolRegistry::new());
+        let tool = Arc::new(PausedTool {
+            executions: Arc::new(AtomicUsize::new(0)),
+            started: Default::default(),
+            finish: Default::default(),
+        });
+        tools
+            .register(
+                aifluxon_core::ToolDescriptor {
+                    name: "effect".into(),
+                    description: "side effect".into(),
+                    input_schema: serde_json::json!({"type":"object"}),
+                    effect: aifluxon_core::ToolEffect::ExternalSideEffect,
+                    required_capabilities: vec![],
+                    parallel_safe: false,
+                },
+                tool.clone(),
+            )
+            .unwrap();
+        let call = ToolCall {
+            id: ToolInvocationId::new(),
+            name: "effect".into(),
+            arguments: serde_json::json!({}),
+            provider_call_id: Some("call".into()),
+        };
+        let authority = ExecutionAuthority {
+            permission_mode: aifluxon_core::PermissionMode::Default,
+            filesystem_scope: aifluxon_core::AgentFilesystemScope::Isolated,
+            capabilities: Default::default(),
+        };
+        let cancellation = coordinator
+            .run_table
+            .cancellation_token(&coordinator.run_id)
+            .unwrap();
+        let first = coordinator.execute_registered_tool(
+            call.clone(),
+            tools.clone(),
+            Arc::new(crate::AllowAllToolPolicy),
+            authority.clone(),
+            cancellation.clone(),
+        );
+        tokio::pin!(first);
+        tokio::select! {
+            _ = tool.started.notified() => {},
+            result = &mut first => panic!("tool must remain in flight: {result:?}"),
+        }
+        let duplicate = coordinator
+            .execute_registered_tool(
+                call.clone(),
+                tools.clone(),
+                Arc::new(crate::AllowAllToolPolicy),
+                authority.clone(),
+                cancellation.clone(),
+            )
+            .await;
+        assert!(duplicate.is_err());
+        tool.finish.notify_one();
+        let first = first.await.unwrap();
+        let cached = coordinator
+            .execute_registered_tool(
+                call,
+                tools,
+                Arc::new(crate::AllowAllToolPolicy),
+                authority,
+                cancellation,
+            )
+            .await
+            .unwrap();
+        assert_eq!(first, cached);
+        assert_eq!(tool.executions.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            coordinator
+                .run_table
+                .events_since(&coordinator.run_id, 0)
+                .unwrap()
+                .iter()
+                .filter(|event| matches!(event.event, RunEvent::ToolStarted { .. }))
+                .count(),
+            1
+        );
+    }
     struct CountingProvider {
         remaining_tool_turns: Mutex<u32>,
     }

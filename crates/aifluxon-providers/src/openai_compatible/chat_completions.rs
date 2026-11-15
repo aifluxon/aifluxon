@@ -187,16 +187,16 @@ impl ChatCompletionsTurnAssembler {
         use aifluxon_core::ProviderError;
         match self.finish_reason.as_deref() {
             Some("stop" | "tool_calls") => {}
-            Some("length") => return Err(ProviderError::message(
+            Some("length") => return Err(ProviderError::new(aifluxon_core::ProviderErrorCode::OutputLimit,
                 "PROVIDER_OUTPUT_LIMIT: Output token limit reached; no tools from this truncated response were dispatched.",
             )),
-            Some("insufficient_system_resource") => return Err(ProviderError::message(
+            Some("insufficient_system_resource") => return Err(ProviderError::new(aifluxon_core::ProviderErrorCode::ResourceUnavailable,
                 "PROVIDER_RESOURCE_UNAVAILABLE: Provider could not complete this response.",
             )),
-            Some(_) => return Err(ProviderError::message(
+            Some(_) => return Err(ProviderError::new(aifluxon_core::ProviderErrorCode::FinishError,
                 "PROVIDER_FINISH_ERROR: Provider did not return a successful finish reason.",
             )),
-            None => return Err(ProviderError::message(
+            None => return Err(ProviderError::new(aifluxon_core::ProviderErrorCode::StreamClosed,
                 "PROVIDER_STREAM_CLOSED: Response ended without a finish reason.",
             )),
         }

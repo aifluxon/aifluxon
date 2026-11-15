@@ -72,6 +72,7 @@ impl ApiFamily {
 
 #[derive(Clone)]
 pub struct OpenAiCompatibleConfig {
+    pub http_client_tuning: crate::common::HttpClientTuning,
     pub provider_id: ProviderId,
     pub base_url: String,
     pub credential_source: Arc<dyn CredentialSource>,
@@ -88,6 +89,7 @@ pub struct OpenAiCompatibleConfig {
 impl std::fmt::Debug for OpenAiCompatibleConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OpenAiCompatibleConfig")
+            .field("http_client_tuning", &self.http_client_tuning)
             .field("provider_id", &self.provider_id)
             .field("base_url", &self.base_url)
             .field("credential_source", &"CredentialSource([redacted])")
@@ -133,6 +135,7 @@ impl OpenAiCompatibleConfig {
         let provider_id = provider_id.into();
         let family = ApiFamily::from_provider_id(provider_id.as_str());
         Self {
+            http_client_tuning: crate::common::HttpClientTuning::default(),
             family,
             send_tool_choice_auto: family != ApiFamily::DeepSeek,
             parallel_tool_calls: !matches!(family, ApiFamily::DeepSeek | ApiFamily::Gemini),
@@ -214,17 +217,11 @@ async fn collect_openai_stream(
 }
 
 async fn send_openai_reqwest(
+    client: &reqwest::Client,
     request: &OpenAiWireRequest,
     retry_policy: Option<crate::common::HttpRetryPolicy>,
 ) -> Result<reqwest::Response, ProviderError> {
-    // Credentials remain request headers. The shared pool contains no default authorization.
-    static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
-    let client = CLIENT
-        .get_or_init(
-            || crate::common::build_http_client(crate::common::HttpClientTuning::default()),
-        )
-        .as_ref()
-        .map_err(|error| ProviderError::message(error.clone()))?;
+    // Credentials remain strictly per-request; the instance pool has no authorization headers.
     let mut builder = client
         .post(&request.url)
         .bearer_auth(&request.api_key)
@@ -234,32 +231,57 @@ async fn send_openai_reqwest(
     }
     let builder = builder.json(&request.body);
     if let Some(policy) = retry_policy {
-        return crate::common::send_http_request(
+        return crate::common::send_http_request_structured(
             "Provider generation",
             builder,
             &[&request.api_key],
             policy,
         )
-        .await
-        .map_err(ProviderError::message);
+        .await;
     }
     builder.send().await.map_err(|error| {
-        ProviderError::message(crate::common::sanitize_provider_error(
-            format!(
-                "{}: Provider request could not be sent: {error}",
-                if crate::common::is_transient_reqwest_error(&error) {
-                    "PROVIDER_TRANSIENT_TRANSPORT"
-                } else {
-                    "PROVIDER_TRANSPORT"
-                }
-            ),
-            &[&request.api_key],
-        ))
+        let code = if crate::common::is_transient_reqwest_error(&error) {
+            aifluxon_core::ProviderErrorCode::TransientTransport
+        } else {
+            aifluxon_core::ProviderErrorCode::Transport
+        };
+        ProviderError::new(
+            code,
+            format!("{}: Provider request could not be sent.", code.as_str()),
+        )
     })
 }
 
 #[derive(Default)]
-pub struct ReqwestOpenAiTransport;
+pub struct ReqwestOpenAiTransport {
+    tuning: crate::common::HttpClientTuning,
+    client: OnceLock<Result<reqwest::Client, String>>,
+}
+
+impl ReqwestOpenAiTransport {
+    pub fn new(tuning: crate::common::HttpClientTuning) -> Self {
+        Self {
+            tuning,
+            client: OnceLock::new(),
+        }
+    }
+
+    /// Supply a preconfigured client for custom TLS roots and other reqwest options.
+    /// Its default headers must not contain provider credentials.
+    pub fn with_client(client: reqwest::Client) -> Self {
+        Self {
+            tuning: Default::default(),
+            client: OnceLock::from(Ok(client)),
+        }
+    }
+
+    fn client(&self) -> Result<&reqwest::Client, ProviderError> {
+        self.client
+            .get_or_init(|| crate::common::build_http_client(self.tuning.clone()))
+            .as_ref()
+            .map_err(|message| ProviderError::message(message.clone()))
+    }
+}
 
 #[async_trait::async_trait]
 impl OpenAiTransport for ReqwestOpenAiTransport {
@@ -274,7 +296,7 @@ impl OpenAiTransport for ReqwestOpenAiTransport {
         &self,
         request: OpenAiWireRequest,
     ) -> Result<(OpenAiStreamHead, OpenAiBodyStream), ProviderError> {
-        let response = send_openai_reqwest(&request, None).await?;
+        let response = send_openai_reqwest(self.client()?, &request, None).await?;
         let head = OpenAiStreamHead {
             retry_after: crate::common::retry_after(response.headers()),
             status: response.status().as_u16(),
@@ -284,15 +306,12 @@ impl OpenAiTransport for ReqwestOpenAiTransport {
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_string),
         };
-        let api_key = request.api_key.clone();
         let body = response.bytes_stream().map(move |chunk| {
-            chunk.map(|bytes| bytes.to_vec()).map_err(|error| {
-                ProviderError::message(crate::common::sanitize_provider_error(
-                    format!(
-                        "PROVIDER_TRANSIENT_TRANSPORT: Provider response stream failed: {error}"
-                    ),
-                    &[&api_key],
-                ))
+            chunk.map(|bytes| bytes.to_vec()).map_err(|_| {
+                ProviderError::new(
+                    aifluxon_core::ProviderErrorCode::TransientTransport,
+                    "PROVIDER_TRANSIENT_TRANSPORT: Provider response stream failed.",
+                )
             })
         });
         Ok((head, Box::pin(body)))
@@ -302,28 +321,30 @@ impl OpenAiTransport for ReqwestOpenAiTransport {
 pub struct OpenAiCompatibleProvider {
     config: OpenAiCompatibleConfig,
     transport: Arc<dyn OpenAiTransport>,
+    http_transport: Arc<ReqwestOpenAiTransport>,
 }
 
 impl OpenAiCompatibleProvider {
     /// Compatibility constructor for registry/boundary tests. A configured transport is required
     /// before `next_turn`; no implicit endpoint or credential is invented.
     pub fn new(provider: impl Into<String>) -> Self {
-        Self {
-            config: OpenAiCompatibleConfig::new(
-                ProviderId::new(provider.into()),
-                String::new(),
-                String::new(),
-                OpenAiApiMode::ChatCompletions,
-                false,
-            ),
-            transport: Arc::new(ReqwestOpenAiTransport),
-        }
+        Self::configured(OpenAiCompatibleConfig::new(
+            ProviderId::new(provider.into()),
+            String::new(),
+            String::new(),
+            OpenAiApiMode::ChatCompletions,
+            false,
+        ))
     }
 
     pub fn configured(config: OpenAiCompatibleConfig) -> Self {
+        let http_transport = Arc::new(ReqwestOpenAiTransport::new(
+            config.http_client_tuning.clone(),
+        ));
         Self {
             config,
-            transport: Arc::new(ReqwestOpenAiTransport),
+            transport: http_transport.clone(),
+            http_transport,
         }
     }
 
@@ -331,7 +352,14 @@ impl OpenAiCompatibleProvider {
         config: OpenAiCompatibleConfig,
         transport: Arc<dyn OpenAiTransport>,
     ) -> Self {
-        Self { config, transport }
+        let http_transport = Arc::new(ReqwestOpenAiTransport::new(
+            config.http_client_tuning.clone(),
+        ));
+        Self {
+            config,
+            transport,
+            http_transport,
+        }
     }
 
     fn endpoint_for(&self, mode: OpenAiApiMode) -> Result<String, ProviderError> {
@@ -404,6 +432,7 @@ impl OpenAiCompatibleProvider {
                 turn_state,
             )?;
             let response = send_openai_reqwest(
+                self.http_transport.client()?,
                 &request,
                 Some(crate::common::generation_retry_policy(&body)),
             )
@@ -568,11 +597,10 @@ impl OpenAiCompatibleProvider {
                 )
                 .instrument(exchange)
                 .await
-                .map_err(|error| {
-                    ProviderError::message(crate::common::sanitize_provider_error(
-                        error.message,
-                        &[&token],
-                    ))
+                .map_err(|mut error| {
+                    error.message =
+                        crate::common::sanitize_provider_error(error.message, &[&token]);
+                    error
                 })?;
             if streamed.0 == 401 && !retried && self.config.credential_source.supports_refresh() {
                 token = self.resolve_bearer(true).await?;
@@ -615,7 +643,8 @@ impl ModelProvider for OpenAiCompatibleProvider {
             )
             .await
             .unwrap_or_else(|_| {
-                Err(ProviderError::message(
+                Err(ProviderError::new(
+                    aifluxon_core::ProviderErrorCode::Deadline,
                     "PROVIDER_DEADLINE: Model attempt exceeded its time budget.",
                 )
                 .into())
@@ -728,9 +757,12 @@ impl OpenAiCompatibleProvider {
         if !(200..300).contains(&status) {
             if crate::common::is_retryable_http_status(status) {
                 return Err(reliability::TurnAttemptError {
-                    error: ProviderError::message(format!(
-                        "PROVIDER_TRANSIENT_HTTP: Provider returned HTTP {status}."
-                    )),
+                    error: ProviderError::new(
+                        aifluxon_core::ProviderErrorCode::TransientHttp,
+                        format!("PROVIDER_TRANSIENT_HTTP: Provider returned HTTP {status}."),
+                    )
+                    .with_http_status(status)
+                    .with_retry_after(retry_after),
                     retry_after,
                 });
             }
@@ -739,6 +771,8 @@ impl OpenAiCompatibleProvider {
                     format!("Provider returned HTTP {status}: {preview}"),
                     &[&token],
                 ))
+                .with_http_status(status)
+                .with_retry_after(retry_after)
                 .into(),
             );
         }

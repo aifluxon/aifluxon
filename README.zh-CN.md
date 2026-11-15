@@ -336,7 +336,7 @@ pytest
 
 ## 当前状态
 
-AIFLUXON `0.2.x` 当前处于 **Experimental** 阶段，Public API 在稳定版之前仍可能继续演进。
+AIFLUXON `0.3.0` 当前处于 **Experimental** 阶段，Public API 在稳定版之前仍可能继续演进。
 
 ## License
 

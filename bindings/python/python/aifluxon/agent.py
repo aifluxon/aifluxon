@@ -473,6 +473,7 @@ class Run:
         text = ""
         state = "running"
         failure: str | None = None
+        failure_event: Failed | None = None
         try:
             while True:
                 raw = await asyncio.to_thread(
@@ -489,6 +490,7 @@ class Run:
                     state = "completed"
                 elif isinstance(event, Failed):
                     failure = event.message
+                    failure_event = event
                     state = "failed"
                 elif event.type == "cancelled":
                     state = "cancelled"
@@ -512,9 +514,15 @@ class Run:
                 CancelledError("The run was cancelled.", kind="Cancelled")
             )
         elif state == "failed":
-            self._result.set_exception(
-                FailedError(failure or "The run failed.", kind="Failed")
+            error = FailedError(
+                failure or "The run failed.",
+                kind=(failure_event.error_kind if failure_event else None) or "Failed",
             )
+            if failure_event is not None:
+                error.error_code = failure_event.error_code
+                error.http_status = failure_event.http_status
+                error.retry_after_ms = failure_event.retry_after_ms
+            self._result.set_exception(error)
         elif state == "completed":
             self._result.set_result(
                 RunResult(

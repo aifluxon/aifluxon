@@ -6,7 +6,7 @@ use aifluxon_core::{
     SessionId, ToolInvocationId,
 };
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::sync::Notify;
@@ -103,23 +103,68 @@ struct RunRecord {
     ledger: Arc<ToolLedger>,
     hooks: Vec<Arc<dyn RunCancellationHook>>,
     events: Vec<RunEventEnvelope>,
+    event_notify: Arc<Notify>,
+    listeners: usize,
+    released: bool,
+    remove_requested: bool,
+    last_event_sequence: u64,
 }
 
 #[derive(Default)]
 struct RunTableInner {
     runs: HashMap<RunId, RunRecord>,
+    terminal_runs: VecDeque<RunId>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct RunTable {
     inner: Arc<Mutex<RunTableInner>>,
     operations: InMemoryOperationStore,
-    event_notify: Arc<Notify>,
+    terminal_capacity: usize,
+}
+
+impl Default for RunTable {
+    fn default() -> Self {
+        Self::with_terminal_capacity(128)
+    }
+}
+
+/// Keeps a run and its terminal events alive until the event consumer finishes.
+pub struct RunEventListener {
+    table: RunTable,
+    run_id: RunId,
+    notify: Arc<Notify>,
+}
+
+impl RunEventListener {
+    pub fn notified(&self) -> tokio::sync::futures::Notified<'_> {
+        self.notify.notified()
+    }
+}
+
+impl Drop for RunEventListener {
+    fn drop(&mut self) {
+        if let Ok(mut inner) = self.table.lock() {
+            if let Some(record) = inner.runs.get_mut(&self.run_id) {
+                record.listeners = record.listeners.saturating_sub(1);
+            }
+            let _ = self.table.prune_locked(&mut inner);
+        }
+    }
 }
 
 impl RunTable {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Retains the newest terminal runs. Active event consumers temporarily pin records.
+    pub fn with_terminal_capacity(terminal_capacity: usize) -> Self {
+        Self {
+            inner: Default::default(),
+            operations: InMemoryOperationStore::new(),
+            terminal_capacity,
+        }
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, RunTableInner>, RunTableError> {
@@ -169,19 +214,112 @@ impl RunTable {
                 ledger: Arc::new(ToolLedger::new()),
                 hooks: Vec::new(),
                 events: vec![started],
+                event_notify: Arc::new(Notify::new()),
+                listeners: 0,
+                released: false,
+                remove_requested: false,
+                last_event_sequence: 1,
             },
         );
         drop(inner);
-        self.wake_event_waiters();
+        self.wake_event_waiters(&context.run_id);
         Ok(context)
     }
 
-    pub fn event_notify(&self) -> Arc<Notify> {
-        self.event_notify.clone()
+    pub fn event_listener(&self, run_id: &RunId) -> Result<RunEventListener, RunTableError> {
+        let mut inner = self.lock()?;
+        let record = inner
+            .runs
+            .get_mut(run_id)
+            .ok_or(RunTableError::UnknownRun)?;
+        record.listeners += 1;
+        Ok(RunEventListener {
+            table: self.clone(),
+            run_id: *run_id,
+            notify: record.event_notify.clone(),
+        })
     }
 
-    fn wake_event_waiters(&self) {
-        self.event_notify.notify_waiters();
+    fn wake_event_waiters(&self, run_id: &RunId) {
+        if let Ok(inner) = self.lock() {
+            if let Some(record) = inner.runs.get(run_id) {
+                record.event_notify.notify_waiters();
+            }
+        }
+    }
+
+    /// Reclaims event/tool history once consumers drain, retaining a lightweight snapshot
+    /// until bounded terminal retention evicts it.
+    pub fn release_run(&self, run_id: &RunId) -> Result<(), RunTableError> {
+        let mut inner = self.lock()?;
+        inner
+            .runs
+            .get_mut(run_id)
+            .ok_or(RunTableError::UnknownRun)?
+            .released = true;
+        self.prune_locked(&mut inner)?;
+        Ok(())
+    }
+
+    /// Removes a terminal run, or defers removal until its event consumers finish.
+    pub fn remove_terminal_run(&self, run_id: &RunId) -> Result<bool, RunTableError> {
+        let mut inner = self.lock()?;
+        let record = inner
+            .runs
+            .get_mut(run_id)
+            .ok_or(RunTableError::UnknownRun)?;
+        if !is_terminal(record.state) {
+            return Ok(false);
+        }
+        record.remove_requested = true;
+        self.prune_locked(&mut inner)?;
+        Ok(!inner.runs.contains_key(run_id))
+    }
+
+    pub fn prune_terminal_runs(&self) -> Result<usize, RunTableError> {
+        let mut inner = self.lock()?;
+        self.prune_locked(&mut inner)
+    }
+
+    fn prune_locked(&self, inner: &mut RunTableInner) -> Result<usize, RunTableError> {
+        let mut removed = 0;
+        let mut retained = VecDeque::new();
+        let mut unpinned = inner
+            .terminal_runs
+            .iter()
+            .filter(|id| {
+                inner
+                    .runs
+                    .get(id)
+                    .is_some_and(|record| record.listeners == 0)
+            })
+            .count();
+        while let Some(run_id) = inner.terminal_runs.pop_front() {
+            let Some(record) = inner.runs.get(&run_id) else {
+                continue;
+            };
+            let over_capacity = unpinned > self.terminal_capacity;
+            if record.listeners == 0
+                && (record.remove_requested || over_capacity)
+                && self.operations.remove_terminal_run(&run_id)?
+            {
+                inner.runs.remove(&run_id);
+                unpinned = unpinned.saturating_sub(1);
+                removed += 1;
+            } else {
+                if record.listeners == 0 && record.released {
+                    self.operations.clear_terminal_run_records(&run_id)?;
+                    let record = inner.runs.get_mut(&run_id).expect("retained run");
+                    if !record.events.is_empty() {
+                        record.events = Vec::new();
+                        record.ledger = Arc::new(ToolLedger::new());
+                    }
+                }
+                retained.push_back(run_id);
+            }
+        }
+        inner.terminal_runs = retained;
+        Ok(removed)
     }
 
     pub fn contains(&self, run_id: &RunId) -> Result<bool, RunTableError> {
@@ -266,7 +404,7 @@ impl RunTable {
         record.state = state;
         let sequence = append_event(record, RunEvent::StateChanged { state })?;
         drop(inner);
-        self.wake_event_waiters();
+        self.wake_event_waiters(run_id);
         Ok(sequence)
     }
 
@@ -287,7 +425,7 @@ impl RunTable {
         }
         let sequence = append_event(record, event)?;
         drop(inner);
-        self.wake_event_waiters();
+        self.wake_event_waiters(run_id);
         Ok(sequence)
     }
 
@@ -308,6 +446,21 @@ impl RunTable {
             run_id,
             RunEvent::Failed {
                 message: message.into(),
+                error: None,
+            },
+        )
+    }
+
+    pub fn finish_provider_error(
+        &self,
+        run_id: &RunId,
+        error: aifluxon_core::ProviderError,
+    ) -> Result<u64, RunTableError> {
+        self.finish(
+            run_id,
+            RunEvent::Failed {
+                message: error.message.clone(),
+                error: Some(error),
             },
         )
     }
@@ -334,10 +487,14 @@ impl RunTable {
                 return Err(RunTableError::RunTerminal);
             }
             record.state = state;
-            append_event(record, event)?
+            record.hooks.clear();
+            let sequence = append_event(record, event)?;
+            inner.terminal_runs.push_back(*run_id);
+            sequence
         };
-        self.wake_event_waiters();
+        self.wake_event_waiters(run_id);
         self.operations.mark_run_terminal(run_id)?;
+        self.prune_terminal_runs()?;
         Ok(sequence)
     }
 
@@ -354,9 +511,11 @@ impl RunTable {
             record.state = RunState::Cancelled;
             record.cancellation.cancel();
             append_event(record, RunEvent::Cancelled)?;
-            std::mem::take(&mut record.hooks)
+            let hooks = std::mem::take(&mut record.hooks);
+            inner.terminal_runs.push_back(*run_id);
+            hooks
         };
-        self.wake_event_waiters();
+        self.wake_event_waiters(run_id);
         self.operations.cancel_run(run_id)?;
         let mut hook_errors = Vec::new();
         for hook in hooks {
@@ -364,10 +523,12 @@ impl RunTable {
                 hook_errors.push(error);
             }
         }
-        Ok(CancellationReport {
+        let report = CancellationReport {
             snapshot: self.snapshot(run_id)?,
             hook_errors,
-        })
+        };
+        self.prune_terminal_runs()?;
+        Ok(report)
     }
 
     pub fn cancel_tree(
@@ -439,12 +600,7 @@ impl RunTable {
         invocation_id: ToolInvocationId,
         execute: impl FnOnce() -> Value,
     ) -> Result<Value, RunTableError> {
-        let ledger = self
-            .lock()?
-            .runs
-            .get(run_id)
-            .map(|record| record.ledger.clone())
-            .ok_or(RunTableError::UnknownRun)?;
+        let ledger = self.tool_ledger(run_id)?;
         ledger
             .execute_once(invocation_id, || {
                 Ok(crate::ToolResult::from_value(execute()))
@@ -467,18 +623,13 @@ impl RunTable {
         Ok(ledger.get(invocation_id).map(|result| result.value))
     }
 
-    pub(crate) fn cached_tool_execution(
-        &self,
-        run_id: &RunId,
-        invocation_id: &ToolInvocationId,
-    ) -> Result<Option<crate::ToolResult>, RunTableError> {
-        let ledger = self
-            .lock()?
-            .runs
-            .get(run_id)
-            .map(|record| record.ledger.clone())
-            .ok_or(RunTableError::UnknownRun)?;
-        Ok(ledger.get(invocation_id))
+    pub(crate) fn tool_ledger(&self, run_id: &RunId) -> Result<Arc<ToolLedger>, RunTableError> {
+        let inner = self.lock()?;
+        let record = inner.runs.get(run_id).ok_or(RunTableError::UnknownRun)?;
+        if is_terminal(record.state) {
+            return Err(RunTableError::RunTerminal);
+        }
+        Ok(record.ledger.clone())
     }
 
     pub fn record_tool_result(
@@ -487,29 +638,8 @@ impl RunTable {
         invocation_id: ToolInvocationId,
         value: Value,
     ) -> Result<(), RunTableError> {
-        let ledger = self
-            .lock()?
-            .runs
-            .get(run_id)
-            .map(|record| record.ledger.clone())
-            .ok_or(RunTableError::UnknownRun)?;
+        let ledger = self.tool_ledger(run_id)?;
         ledger.record(invocation_id, crate::ToolResult::from_value(value));
-        Ok(())
-    }
-
-    pub(crate) fn record_tool_execution(
-        &self,
-        run_id: &RunId,
-        invocation_id: ToolInvocationId,
-        result: crate::ToolResult,
-    ) -> Result<(), RunTableError> {
-        let ledger = self
-            .lock()?
-            .runs
-            .get(run_id)
-            .map(|record| record.ledger.clone())
-            .ok_or(RunTableError::UnknownRun)?;
-        ledger.record(invocation_id, result);
         Ok(())
     }
 
@@ -536,15 +666,7 @@ impl RunTable {
         let (context, state, last_event_sequence) = {
             let inner = self.lock()?;
             let record = inner.runs.get(run_id).ok_or(RunTableError::UnknownRun)?;
-            (
-                record.context,
-                record.state,
-                record
-                    .events
-                    .last()
-                    .map(|event| event.sequence)
-                    .unwrap_or(0),
-            )
+            (record.context, record.state, record.last_event_sequence)
         };
         Ok(CanonicalRunSnapshot {
             context,
@@ -578,11 +700,8 @@ fn append_event(record: &mut RunRecord, event: RunEvent) -> Result<u64, RunTable
     {
         return Err(RunTableError::RunTerminal);
     }
-    let sequence = record
-        .events
-        .last()
-        .map(|event| event.sequence.saturating_add(1))
-        .unwrap_or(1);
+    let sequence = record.last_event_sequence.saturating_add(1);
+    record.last_event_sequence = sequence;
     record.events.push(RunEventEnvelope {
         sequence,
         run_id: record.context.run_id,
@@ -604,6 +723,120 @@ mod tests {
     use aifluxon_core::{OperationId, OperationMode, PendingOperationDraft, ToolEffect};
     use std::sync::atomic::AtomicUsize;
     use std::time::Duration;
+
+    #[test]
+    fn terminal_retention_bounds_history_and_preserves_active_and_recent_runs() {
+        let table = RunTable::with_terminal_capacity(2);
+        let active = table.start(None, None, limits()).unwrap().run_id;
+        let mut finished = Vec::new();
+        for n in 0..8 {
+            let id = table.start(None, None, limits()).unwrap().run_id;
+            table
+                .emit(
+                    &id,
+                    RunEvent::ModelDelta {
+                        delta: "large history".repeat(100),
+                    },
+                )
+                .unwrap();
+            table
+                .record_tool_result(
+                    &id,
+                    ToolInvocationId::new(),
+                    Value::String("large result".repeat(100)),
+                )
+                .unwrap();
+            if n % 3 == 0 {
+                table.cancel(&id).unwrap();
+            } else if n % 3 == 1 {
+                table.finish_failed(&id, "failed").unwrap();
+            } else {
+                table.finish_completed(&id, vec![]).unwrap();
+            }
+            finished.push(id);
+        }
+        assert!(table.contains(&active).unwrap());
+        assert_eq!(table.lock().unwrap().runs.len(), 3);
+        for id in &finished[..6] {
+            assert_eq!(table.snapshot(id), Err(RunTableError::UnknownRun));
+        }
+        for id in &finished[6..] {
+            assert!(table.snapshot(id).is_ok());
+        }
+        assert!(!table.remove_terminal_run(&active).unwrap());
+    }
+
+    #[tokio::test]
+    async fn event_notifications_are_per_run_and_do_not_lose_pre_poll_wakes() {
+        let table = RunTable::new();
+        let first = table.start(None, None, limits()).unwrap().run_id;
+        let second = table.start(None, None, limits()).unwrap().run_id;
+        let a = table.event_listener(&first).unwrap();
+        let b = table.event_listener(&second).unwrap();
+        let wake_a = a.notified();
+        let wake_b = b.notified();
+        table
+            .emit(&first, RunEvent::ModelDelta { delta: "x".into() })
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), wake_a)
+            .await
+            .unwrap();
+        assert!(tokio::time::timeout(Duration::from_millis(10), wake_b)
+            .await
+            .is_err());
+        let wake_a = a.notified();
+        table.finish_completed(&first, vec![]).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), wake_a)
+            .await
+            .unwrap();
+    }
+
+    #[test]
+    fn release_compacts_history_after_listener_drains_and_preserves_snapshot() {
+        let table = RunTable::new();
+        let id = table.start(None, None, limits()).unwrap().run_id;
+        let listener = table.event_listener(&id).unwrap();
+        table
+            .record_tool_result(&id, ToolInvocationId::new(), Value::Null)
+            .unwrap();
+        table.finish_completed(&id, vec![]).unwrap();
+        let snapshot = table.snapshot(&id).unwrap();
+        table.release_run(&id).unwrap();
+        assert!(!table.events_since(&id, 0).unwrap().is_empty());
+        drop(listener);
+        assert_eq!(table.snapshot(&id).unwrap(), snapshot);
+        assert!(table.events_since(&id, 0).unwrap().is_empty());
+        assert_eq!(table.tool_execution_count(&id).unwrap(), 0);
+        assert_eq!(
+            table.execute_tool_once(&id, ToolInvocationId::new(), || panic!(
+                "terminal execution"
+            )),
+            Err(RunTableError::RunTerminal)
+        );
+        assert!(table.remove_terminal_run(&id).unwrap());
+        assert!(!table.contains(&id).unwrap());
+    }
+
+    #[test]
+    fn pinned_terminal_run_survives_capacity_and_explicit_removal_until_drain() {
+        let table = RunTable::with_terminal_capacity(1);
+        let id = table.start(None, None, limits()).unwrap().run_id;
+        let listener = table.event_listener(&id).unwrap();
+        table.release_run(&id).unwrap();
+        table.cancel(&id).unwrap();
+        assert!(!table.remove_terminal_run(&id).unwrap());
+        for _ in 0..3 {
+            let recent = table.start(None, None, limits()).unwrap().run_id;
+            table.finish_completed(&recent, vec![]).unwrap();
+            assert!(table.snapshot(&recent).is_ok());
+        }
+        assert!(matches!(
+            table.events_since(&id, 0).unwrap().last().unwrap().event,
+            RunEvent::Cancelled
+        ));
+        drop(listener);
+        assert!(!table.contains(&id).unwrap());
+    }
 
     fn limits() -> RunLimits {
         RunLimits {

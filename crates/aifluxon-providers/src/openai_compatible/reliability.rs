@@ -44,17 +44,7 @@ impl ModelEventSink for AttemptSink {
 }
 
 pub(crate) fn retryable_error(error: &ProviderError) -> bool {
-    [
-        "PROVIDER_STREAM_CLOSED:",
-        "PROVIDER_INVALID_TOOL_CALL:",
-        "PROVIDER_EMPTY_RESPONSE:",
-        "PROVIDER_MALFORMED_RESPONSE:",
-        "PROVIDER_RESOURCE_UNAVAILABLE:",
-        "PROVIDER_TRANSIENT_HTTP:",
-        "PROVIDER_TRANSIENT_TRANSPORT:",
-    ]
-    .iter()
-    .any(|code| error.message.starts_with(code))
+    error.code.is_retryable()
 }
 
 pub(crate) fn validate_turn(turn: &ModelTurn) -> Result<(), ProviderError> {
@@ -68,12 +58,14 @@ pub(crate) fn validate_turn(turn: &ModelTurn) -> Result<(), ProviderError> {
         && !has_artifact
         && turn.terminal.continuation_reason().is_none()
     {
-        return Err(ProviderError::message(
+        return Err(ProviderError::new(
+            aifluxon_core::ProviderErrorCode::EmptyResponse,
             "PROVIDER_EMPTY_RESPONSE: Provider returned no answer or executable tool calls.",
         ));
     }
     if turn.terminal == ProviderTerminal::ToolCalls && turn.tool_calls.is_empty() {
-        return Err(ProviderError::message(
+        return Err(ProviderError::new(
+            aifluxon_core::ProviderErrorCode::InvalidToolCall,
             "PROVIDER_INVALID_TOOL_CALL: Provider ended in tool mode without a tool call.",
         ));
     }
@@ -86,7 +78,7 @@ pub(crate) fn validate_turn(turn: &ModelTurn) -> Result<(), ProviderError> {
                 .as_deref()
                 .is_none_or(|id| id.trim().is_empty() || !ids.insert(id))
     }) {
-        return Err(ProviderError::message(
+        return Err(ProviderError::new(aifluxon_core::ProviderErrorCode::InvalidToolCall,
             "PROVIDER_INVALID_TOOL_CALL: Tool identity or JSON arguments are incomplete; no tools were dispatched.",
         ));
     }
@@ -100,8 +92,8 @@ pub(super) struct TurnAttemptError {
 impl From<ProviderError> for TurnAttemptError {
     fn from(error: ProviderError) -> Self {
         Self {
+            retry_after: error.retry_after,
             error,
-            retry_after: None,
         }
     }
 }
