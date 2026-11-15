@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.3.1 - 2026-11-16
+
+- Add structured ProviderError failures with machine-readable codes, HTTP status, and retry delays.
+- Use per-run event notifications and bounded terminal-run retention to limit runtime memory growth.
+- Give provider instances their own HTTP clients with configurable proxy and timeout settings.
+- Make asynchronous ToolLedger claims atomic to prevent duplicate tool execution.
+
 ## 0.3.0 - 2026-10-26
 
 - Complete Python run options with finite/unlimited budgets, tool allowlists, provider features, session keys and explicit capability grants.
